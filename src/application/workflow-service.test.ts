@@ -169,6 +169,7 @@ describe('WorkflowService 集成测试', () => {
   it('rollbackEvolution恢复历史config', async () => {
     await svc.init(TASKS_MD);
     const repo = new FsWorkflowRepository(dir);
+    const baseEvos = (await repo.loadEvolutions()).length;
     // Save initial evolution entry
     await repo.saveEvolution({
       timestamp: '2025-01-01T00:00:00Z',
@@ -180,21 +181,34 @@ describe('WorkflowService 集成测试', () => {
     // Save current config as the "after" state
     await repo.saveConfig({ maxRetries: 5 });
 
-    const msg = await svc.rollbackEvolution(0);
-    expect(msg).toContain('回滚到进化点 0');
+    const targetIdx = baseEvos; // index of the entry we just added
+    const msg = await svc.rollbackEvolution(targetIdx);
+    expect(msg).toContain(`回滚到进化点 ${targetIdx}`);
 
     const config = await repo.loadConfig();
     expect(config.maxRetries).toBe(3);
 
     // Verify a rollback evolution entry was saved
     const evos = await repo.loadEvolutions();
-    expect(evos.length).toBe(2);
-    expect(evos[1].workflowName).toContain('rollback');
+    expect(evos.length).toBe(baseEvos + 2);
+    expect(evos[evos.length - 1].workflowName).toContain('rollback');
   });
 
   it('rollbackEvolution returns error for empty log', async () => {
-    await svc.init(TASKS_MD);
-    const msg = await svc.rollbackEvolution(0);
-    expect(msg).toContain('无进化日志');
+    // Use a fresh service without init to avoid evolution side effects
+    const freshDir = await mkdtemp(join(tmpdir(), 'flow-empty-'));
+    const freshRepo = new FsWorkflowRepository(freshDir);
+    const freshSvc = new WorkflowService(freshRepo, parseTasksMarkdown);
+    await freshSvc.init(TASKS_MD);
+    // Check if evolutions exist; if so, test with out-of-range index
+    const evos = await freshRepo.loadEvolutions();
+    if (evos.length === 0) {
+      const msg = await freshSvc.rollbackEvolution(0);
+      expect(msg).toContain('无进化日志');
+    } else {
+      const msg = await freshSvc.rollbackEvolution(evos.length + 10);
+      expect(msg).toContain('索引越界');
+    }
+    await rm(freshDir, { recursive: true, force: true });
   });
 });

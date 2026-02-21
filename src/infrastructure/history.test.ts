@@ -184,6 +184,9 @@ describe('review', () => {
   beforeEach(() => { base = mkdtempSync(join(tmpdir(), 'fp-review-')); });
 
   it('no history data: all checks pass', async () => {
+    const protoDir = join(base, 'FlowPilot', 'src', 'templates');
+    mkdirSync(protoDir, { recursive: true });
+    writeFileSync(join(protoDir, 'protocol.md'), '# proto');
     const result = await review(base);
     expect(result.rolledBack).toBe(false);
     expect(result.checks.every(c => c.passed)).toBe(true);
