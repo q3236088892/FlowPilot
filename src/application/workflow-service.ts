@@ -180,6 +180,13 @@ export class WorkflowService {
         parts.push('## 健康检查警告\n\n' + hcWarnings.map(w => `- ${w}`).join('\n'));
       }
 
+      // 注入进化建议（config.hints）
+      const cfg = await this.repo.loadConfig();
+      const hints = (cfg as any).hints as string[] | undefined;
+      if (hints?.length) {
+        parts.push('## 进化建议\n\n' + hints.map(h => `- ${h}`).join('\n'));
+      }
+
       return { task, context: parts.join('\n\n---\n\n') };
     } finally {
       await this.repo.unlock();
@@ -199,12 +206,17 @@ export class WorkflowService {
       }
 
       const cascaded = cascadeSkip(data.tasks);
-      const tasks = findParallelTasks(cascaded);
+      let tasks = findParallelTasks(cascaded);
       if (!tasks.length) {
         await this.repo.saveProgress({ ...data, tasks: cascaded });
         log.debug('nextBatch: 无可并行任务');
         return [];
       }
+
+      // 消费 config.parallelLimit
+      const config = await this.repo.loadConfig();
+      const limit = (config as any).parallelLimit;
+      if (limit && tasks.length > limit) tasks = tasks.slice(0, limit);
 
       log.debug(`nextBatch: 激活 ${tasks.map(t => t.id).join(',')}`);
       const activeIds = new Set(tasks.map(t => t.id));
@@ -234,6 +246,11 @@ export class WorkflowService {
         // 注入循环检测警告
         if (loopWarning) {
           parts.push(`## 循环检测警告\n\n${loopWarning}`);
+        }
+        // 注入进化建议（config.hints）
+        const hints = (config as any).hints as string[] | undefined;
+        if (hints?.length) {
+          parts.push('## 进化建议\n\n' + hints.map(h => `- ${h}`).join('\n'));
         }
         results.push({ task, context: parts.join('\n\n---\n\n') });
       }
@@ -284,7 +301,9 @@ export class WorkflowService {
           });
         }
 
-        const { result, data: newData } = failTask(data, id);
+        const config = await this.repo.loadConfig();
+        const maxRetries = (config as any).maxRetries ?? 3;
+        const { result, data: newData } = failTask(data, id, maxRetries);
         await this.repo.saveProgress(newData);
         log.debug(`checkpoint ${id}: failTask result=${result}, retries=${task.retries + 1}`);
         const msg = result === 'retry'

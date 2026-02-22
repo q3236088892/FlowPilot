@@ -88,8 +88,8 @@ echo '摘要 [REMEMBER] 关键知识点 [DECISION] 重要决策' | node flow.js 
 1. Run \`node flow.js finish\` — runs verify (build/test/lint). If fail → dispatch sub-agent to fix → retry finish.
 2. When finish returns "验证通过，请派子Agent执行 code-review" → dispatch a sub-agent to run /code-review:code-review. Fix issues if any.
 3. Run \`node flow.js review\` to mark code-review done.
-4. **AI 反思（进化引擎）**: dispatch a sub-agent to analyze the workflow. Sub-agent MUST:
-   - **MUST invoke /superpowers:brainstorming FIRST** — 以头脑风暴方式多维度反思本轮工作流（成功模式、失败根因、优化机会、架构洞察）。Skipping = protocol failure.
+4. **AI 反思（进化引擎，可选）**: 询问用户："本轮工作流已完成，是否针对本项目进行反思迭代进化？（会消耗额外 token）" 用户同意后才执行。Sub-agent MUST:
+   - **MUST invoke /superpowers:brainstorming FIRST** — 反思对象是**工作流执行过程本身**（任务成功率、重试模式、并行效率、协议瓶颈），NOT 目标项目的代码或架构。
    - Read \`.flowpilot/history/\` files to understand workflow stats
    - Read \`.flowpilot/evolution/\` files to see past experiments
    - Analyze: what went well, what could improve, config optimization opportunities

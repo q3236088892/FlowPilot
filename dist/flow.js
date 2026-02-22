@@ -292,8 +292,8 @@ echo '\u6458\u8981 [REMEMBER] \u5173\u952E\u77E5\u8BC6\u70B9 [DECISION] \u91CD\u
 1. Run \`node flow.js finish\` \u2014 runs verify (build/test/lint). If fail \u2192 dispatch sub-agent to fix \u2192 retry finish.
 2. When finish returns "\u9A8C\u8BC1\u901A\u8FC7\uFF0C\u8BF7\u6D3E\u5B50Agent\u6267\u884C code-review" \u2192 dispatch a sub-agent to run /code-review:code-review. Fix issues if any.
 3. Run \`node flow.js review\` to mark code-review done.
-4. **AI \u53CD\u601D\uFF08\u8FDB\u5316\u5F15\u64CE\uFF09**: dispatch a sub-agent to analyze the workflow. Sub-agent MUST:
-   - **MUST invoke /superpowers:brainstorming FIRST** \u2014 \u4EE5\u5934\u8111\u98CE\u66B4\u65B9\u5F0F\u591A\u7EF4\u5EA6\u53CD\u601D\u672C\u8F6E\u5DE5\u4F5C\u6D41\uFF08\u6210\u529F\u6A21\u5F0F\u3001\u5931\u8D25\u6839\u56E0\u3001\u4F18\u5316\u673A\u4F1A\u3001\u67B6\u6784\u6D1E\u5BDF\uFF09\u3002Skipping = protocol failure.
+4. **AI \u53CD\u601D\uFF08\u8FDB\u5316\u5F15\u64CE\uFF0C\u53EF\u9009\uFF09**: \u8BE2\u95EE\u7528\u6237\uFF1A"\u672C\u8F6E\u5DE5\u4F5C\u6D41\u5DF2\u5B8C\u6210\uFF0C\u662F\u5426\u9488\u5BF9\u672C\u9879\u76EE\u8FDB\u884C\u53CD\u601D\u8FED\u4EE3\u8FDB\u5316\uFF1F\uFF08\u4F1A\u6D88\u8017\u989D\u5916 token\uFF09" \u7528\u6237\u540C\u610F\u540E\u624D\u6267\u884C\u3002Sub-agent MUST:
+   - **MUST invoke /superpowers:brainstorming FIRST** \u2014 \u53CD\u601D\u5BF9\u8C61\u662F**\u5DE5\u4F5C\u6D41\u6267\u884C\u8FC7\u7A0B\u672C\u8EAB**\uFF08\u4EFB\u52A1\u6210\u529F\u7387\u3001\u91CD\u8BD5\u6A21\u5F0F\u3001\u5E76\u884C\u6548\u7387\u3001\u534F\u8BAE\u74F6\u9888\uFF09\uFF0CNOT \u76EE\u6807\u9879\u76EE\u7684\u4EE3\u7801\u6216\u67B6\u6784\u3002
    - Read \`.flowpilot/history/\` files to understand workflow stats
    - Read \`.flowpilot/evolution/\` files to see past experiments
    - Analyze: what went well, what could improve, config optimization opportunities
@@ -702,12 +702,12 @@ function completeTask(data, id, summary) {
     tasks: data.tasks.map((t) => t.id === id ? { ...t, status: "done", summary } : t)
   };
 }
-function failTask(data, id) {
+function failTask(data, id, maxRetries = 3) {
   const idx = buildIndex(data.tasks);
   if (!idx.has(id)) throw new Error(`\u4EFB\u52A1 ${id} \u4E0D\u5B58\u5728`);
   const old = idx.get(id);
   const retries = old.retries + 1;
-  if (retries >= 3) {
+  if (retries >= maxRetries) {
     return {
       result: "skip",
       data: { ...data, current: null, tasks: data.tasks.map((t) => t.id === id ? { ...t, retries, status: "failed" } : t) }
@@ -1432,15 +1432,11 @@ async function experiment(report, basePath2) {
   const log2 = { timestamp: (/* @__PURE__ */ new Date()).toISOString(), experiments: [], status: "completed" };
   if (!report.experiments.length) return log2;
   const configPath = (0, import_path4.join)(basePath2, ".flowpilot", "config.json");
-  const claudeMdPath = (0, import_path4.join)(basePath2, "CLAUDE.md");
   const configSnapshot = await safeRead(configPath, "{}");
-  const claudeMdSnapshot = await safeRead(claudeMdPath, "");
-  const snapshotFile = await saveSnapshot(basePath2, { "config.json": configSnapshot, "CLAUDE.md": claudeMdSnapshot });
+  const snapshotFile = await saveSnapshot(basePath2, { "config.json": configSnapshot });
   log2.snapshotFile = snapshotFile;
   try {
     let configObj = JSON.parse(configSnapshot);
-    let claudeMdContent = claudeMdSnapshot;
-    let claudeMdExpCount = 0;
     for (const exp of report.experiments) {
       const applied = { ...exp, applied: false, snapshotBefore: "" };
       try {
@@ -1452,40 +1448,20 @@ async function experiment(report, basePath2) {
             applied.applied = true;
           }
         } else if (exp.target === "claude-md") {
-          applied.snapshotBefore = claudeMdSnapshot;
-          if (claudeMdExpCount >= 3) {
-          } else {
-            const stripComments = (s) => s.replace(/<!--/g, "").replace(/-->/g, "");
-            const safeTrigger = stripComments(exp.trigger);
-            const safeAction = stripComments(exp.action);
-            const endTag = "<!-- flowpilot:end -->";
-            const idx = claudeMdContent.indexOf(endTag);
-            if (idx >= 0) {
-              const insertion = `
-<!-- evolution: ${safeTrigger} -->
-> ${safeAction}
-`;
-              const startTag = "<!-- flowpilot:start -->";
-              const startIdx = claudeMdContent.indexOf(startTag);
-              const regionSize = idx + endTag.length - (startIdx >= 0 ? startIdx : 0) + insertion.length;
-              if (regionSize <= 10240) {
-                claudeMdContent = claudeMdContent.slice(0, idx) + insertion + claudeMdContent.slice(idx);
-                applied.applied = true;
-                claudeMdExpCount++;
-              }
-            }
+          applied.snapshotBefore = configSnapshot;
+          const hints = configObj.hints ?? [];
+          if (hints.length < 10 && !hints.includes(exp.action)) {
+            configObj = { ...configObj, hints: [...hints, exp.action] };
+            applied.applied = true;
           }
         }
       } catch {
       }
       log2.experiments.push(applied);
     }
-    if (log2.experiments.some((e) => e.applied && e.target === "config")) {
+    if (log2.experiments.some((e) => e.applied)) {
       await (0, import_promises3.mkdir)((0, import_path4.dirname)(configPath), { recursive: true });
       await (0, import_promises3.writeFile)(configPath, JSON.stringify(configObj, null, 2), "utf-8");
-    }
-    if (log2.experiments.some((e) => e.applied && e.target === "claude-md")) {
-      await (0, import_promises3.writeFile)(claudeMdPath, claudeMdContent, "utf-8");
     }
   } catch {
     log2.status = "failed";
@@ -2717,6 +2693,11 @@ ${loopWarning}`);
       if (hcWarnings.length) {
         parts.push("## \u5065\u5EB7\u68C0\u67E5\u8B66\u544A\n\n" + hcWarnings.map((w) => `- ${w}`).join("\n"));
       }
+      const cfg = await this.repo.loadConfig();
+      const hints = cfg.hints;
+      if (hints?.length) {
+        parts.push("## \u8FDB\u5316\u5EFA\u8BAE\n\n" + hints.map((h) => `- ${h}`).join("\n"));
+      }
       return { task, context: parts.join("\n\n---\n\n") };
     } finally {
       await this.repo.unlock();
@@ -2733,12 +2714,15 @@ ${loopWarning}`);
         throw new Error(`\u6709 ${active.length} \u4E2A\u4EFB\u52A1\u4ECD\u4E3A active \u72B6\u6001\uFF08${active.map((t) => t.id).join(",")}\uFF09\uFF0C\u8BF7\u5148\u6267\u884C node flow.js status \u68C0\u67E5\u5E76\u8865 checkpoint\uFF0C\u6216 node flow.js resume \u91CD\u7F6E`);
       }
       const cascaded = cascadeSkip(data.tasks);
-      const tasks = findParallelTasks(cascaded);
+      let tasks = findParallelTasks(cascaded);
       if (!tasks.length) {
         await this.repo.saveProgress({ ...data, tasks: cascaded });
         log.debug("nextBatch: \u65E0\u53EF\u5E76\u884C\u4EFB\u52A1");
         return [];
       }
+      const config = await this.repo.loadConfig();
+      const limit = config.parallelLimit;
+      if (limit && tasks.length > limit) tasks = tasks.slice(0, limit);
       log.debug(`nextBatch: \u6FC0\u6D3B ${tasks.map((t) => t.id).join(",")}`);
       const activeIds = new Set(tasks.map((t) => t.id));
       const activated = cascaded.map((t) => activeIds.has(t.id) ? { ...t, status: "active" } : t);
@@ -2765,6 +2749,10 @@ ${loopWarning}`);
           parts.push(`## \u5FAA\u73AF\u68C0\u6D4B\u8B66\u544A
 
 ${loopWarning}`);
+        }
+        const hints = config.hints;
+        if (hints?.length) {
+          parts.push("## \u8FDB\u5316\u5EFA\u8BAE\n\n" + hints.map((h) => `- ${h}`).join("\n"));
         }
         results.push({ task, context: parts.join("\n\n---\n\n") });
       }
@@ -2802,7 +2790,9 @@ ${loopWarning}`);
             timestamp: (/* @__PURE__ */ new Date()).toISOString()
           });
         }
-        const { result, data: newData2 } = failTask(data, id);
+        const config = await this.repo.loadConfig();
+        const maxRetries = config.maxRetries ?? 3;
+        const { result, data: newData2 } = failTask(data, id, maxRetries);
         await this.repo.saveProgress(newData2);
         log.debug(`checkpoint ${id}: failTask result=${result}, retries=${task.retries + 1}`);
         const msg2 = result === "retry" ? `\u4EFB\u52A1 ${id} \u5931\u8D25(\u7B2C${task.retries + 1}\u6B21)\uFF0C\u5C06\u91CD\u8BD5` : `\u4EFB\u52A1 ${id} \u8FDE\u7EED\u5931\u8D253\u6B21\uFF0C\u5DF2\u8DF3\u8FC7`;

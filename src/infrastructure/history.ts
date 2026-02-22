@@ -386,19 +386,14 @@ export async function experiment(
   if (!report.experiments.length) return log;
 
   const configPath = join(basePath, '.flowpilot', 'config.json');
-  const claudeMdPath = join(basePath, 'CLAUDE.md');
 
-  // 预快照：实验前保存完整文件内容（参考 Memoh-v2 files_snapshot）
+  // 预快照：实验前保存完整文件内容
   const configSnapshot = await safeRead(configPath, '{}');
-  const claudeMdSnapshot = await safeRead(claudeMdPath, '');
-  const snapshotFile = await saveSnapshot(basePath, { 'config.json': configSnapshot, 'CLAUDE.md': claudeMdSnapshot });
+  const snapshotFile = await saveSnapshot(basePath, { 'config.json': configSnapshot });
   log.snapshotFile = snapshotFile;
 
   try {
     let configObj = JSON.parse(configSnapshot);
-    let claudeMdContent = claudeMdSnapshot;
-
-    let claudeMdExpCount = 0;
 
     for (const exp of report.experiments) {
       const applied: AppliedExperiment = { ...exp, applied: false, snapshotBefore: '' };
@@ -411,38 +406,21 @@ export async function experiment(
             applied.applied = true;
           }
         } else if (exp.target === 'claude-md') {
-          applied.snapshotBefore = claudeMdSnapshot;
-          if (claudeMdExpCount >= 3) { /* max 3 claude-md experiments per cycle */ }
-          else {
-            const stripComments = (s: string) => s.replace(/<!--/g, '').replace(/-->/g, '');
-            const safeTrigger = stripComments(exp.trigger);
-            const safeAction = stripComments(exp.action);
-            const endTag = '<!-- flowpilot:end -->';
-            const idx = claudeMdContent.indexOf(endTag);
-            if (idx >= 0) {
-              const insertion = `\n<!-- evolution: ${safeTrigger} -->\n> ${safeAction}\n`;
-              const startTag = '<!-- flowpilot:start -->';
-              const startIdx = claudeMdContent.indexOf(startTag);
-              const regionSize = (idx + endTag.length) - (startIdx >= 0 ? startIdx : 0) + insertion.length;
-              if (regionSize <= 10_240) {
-                claudeMdContent = claudeMdContent.slice(0, idx) + insertion + claudeMdContent.slice(idx);
-                applied.applied = true;
-                claudeMdExpCount++;
-              }
-            }
+          applied.snapshotBefore = configSnapshot;
+          const hints: string[] = configObj.hints ?? [];
+          if (hints.length < 10 && !hints.includes(exp.action)) {
+            configObj = { ...configObj, hints: [...hints, exp.action] };
+            applied.applied = true;
           }
         }
       } catch { /* 降级：applied 保持 false */ }
       log.experiments.push(applied);
     }
 
-    // 循环结束后一次性写入
-    if (log.experiments.some(e => e.applied && e.target === 'config')) {
+    // 循环结束后一次性写入 config（含 hints）
+    if (log.experiments.some(e => e.applied)) {
       await mkdir(dirname(configPath), { recursive: true });
       await writeFile(configPath, JSON.stringify(configObj, null, 2), 'utf-8');
-    }
-    if (log.experiments.some(e => e.applied && e.target === 'claude-md')) {
-      await writeFile(claudeMdPath, claudeMdContent, 'utf-8');
     }
   } catch {
     log.status = 'failed';
