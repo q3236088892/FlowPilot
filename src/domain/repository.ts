@@ -51,6 +51,8 @@ export interface WorkflowRepository {
   /** 文件锁 */
   lock(maxWait?: number): Promise<void>;
   unlock(): Promise<void>;
+  /** 列出当前工作区真实业务改动文件（staged/unstaged/untracked） */
+  listChangedFiles(): string[];
   /** Git自动提交，返回真实提交结果 */
   commit(taskId: string, title: string, summary: string, files?: string[]): CommitResult;
   /** Git清理未提交变更（resume时调用），用stash保留而非丢弃 */

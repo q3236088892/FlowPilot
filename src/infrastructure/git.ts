@@ -46,6 +46,16 @@ function hasCachedChanges(cwd: string, files: string[]): boolean {
   }
 }
 
+/** 读取 git 命令输出的路径列表；命令失败时返回空数组，让上层按 no-files 兜底 */
+function readGitPaths(cwd: string, args: string[]): string[] {
+  try {
+    const out = execFileSync('git', args, { stdio: 'pipe', cwd, encoding: 'utf-8' });
+    return out.split('\n').map(normalizeGitPath).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 /** 获取所有子模块路径，无 .gitmodules 时返回空数组，有但命令失败时抛出 */
 function getSubmodules(): string[] {
   if (!existsSync('.gitmodules')) return [];
@@ -94,6 +104,27 @@ function commitIn(cwd: string, files: string[], msg: string): CommitResult {
  * 现在保守地保持用户工作区原样，避免 FlowPilot 越权处理用户改动。
  */
 export function gitCleanup(): void {}
+
+/** 收集当前工作区真实改动文件，包含 staged/unstaged/untracked */
+export function listChangedFiles(cwd = process.cwd()): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  const groups = [
+    readGitPaths(cwd, ['diff', '--name-only', '--cached']),
+    readGitPaths(cwd, ['diff', '--name-only']),
+    readGitPaths(cwd, ['ls-files', '--others', '--exclude-standard']),
+  ];
+
+  for (const group of groups) {
+    for (const file of group) {
+      if (seen.has(file)) continue;
+      seen.add(file);
+      result.push(file);
+    }
+  }
+
+  return result;
+}
 
 export const __testables = {
   normalizeGitPath,

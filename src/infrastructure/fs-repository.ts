@@ -8,7 +8,7 @@ import { join } from 'path';
 import { openSync, closeSync } from 'fs';
 import type { ProgressData, TaskEntry, WorkflowStats, EvolutionEntry } from '../domain/types';
 import type { WorkflowRepository, VerifyResult, CommitResult } from '../domain/repository';
-import { autoCommit, gitCleanup, tagTask, rollbackToTask, cleanTags as gitCleanTags } from './git';
+import { autoCommit, gitCleanup, tagTask, rollbackToTask, cleanTags as gitCleanTags, listChangedFiles as gitListChangedFiles } from './git';
 import { runVerify } from './verify';
 import { PROTOCOL_TEMPLATE } from './protocol-template';
 
@@ -263,6 +263,10 @@ export class FsWorkflowRepository implements WorkflowRepository {
     await this.ensure(dir);
     await writeFile(path, JSON.stringify(nextSettings, null, 2) + '\n', 'utf-8');
     return true;
+  }
+
+  listChangedFiles(): string[] {
+    return gitListChangedFiles(this.base);
   }
 
   commit(taskId: string, title: string, summary: string, files?: string[]): CommitResult {

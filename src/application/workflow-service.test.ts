@@ -53,6 +53,10 @@ function mockCommitResult(repo: FsWorkflowRepository, result: CommitResult) {
   return vi.spyOn(repo, 'commit').mockReturnValue(result);
 }
 
+function mockChangedFiles(repo: FsWorkflowRepository, files: string[]) {
+  return vi.spyOn(repo, 'listChangedFiles').mockReturnValue(files);
+}
+
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'flow-int-'));
   const repo = new FsWorkflowRepository(dir);
@@ -233,8 +237,33 @@ describe('WorkflowService 集成测试', () => {
     expect(msg).not.toContain('[已自动提交]');
   });
 
+  it('finish在存在业务改动时会提交最终commit', async () => {
+    const repo = new FsWorkflowRepository(dir);
+    mockChangedFiles(repo, ['src/main.ts']);
+    const commitSpy = vi.spyOn(repo, 'commit').mockImplementation((taskId, title, summary, files) => {
+      if (taskId !== 'finish') {
+        return { status: 'skipped', reason: 'no-files' };
+      }
+      expect(files).toEqual(['src/main.ts']);
+      return { status: 'committed' };
+    });
+    vi.spyOn(repo, 'verify').mockReturnValue({ passed: true, scripts: ['npm test -- --run'] });
+    svc = new WorkflowService(repo, parseTasksMarkdown);
+    await completeWorkflow(svc);
+    await svc.review();
+
+    const msg = await svc.finish();
+    expect(msg).toContain('验证通过: npm test -- --run');
+    expect(msg).toContain('已提交最终commit');
+    expect(msg).not.toContain('未提交最终commit');
+    expect(commitSpy).toHaveBeenCalledTimes(4);
+    expect(commitSpy.mock.calls.at(-1)?.[0]).toBe('finish');
+    expect(await svc.status()).toBeNull();
+  });
+
   it('finish在未提供文件时说明未提交最终commit但仍正常收尾', async () => {
     const repo = new FsWorkflowRepository(dir);
+    mockChangedFiles(repo, []);
     mockCommitResult(repo, { status: 'skipped', reason: 'no-files' });
     vi.spyOn(repo, 'verify').mockReturnValue({ passed: true, scripts: ['npm test'] });
     svc = new WorkflowService(repo, parseTasksMarkdown);

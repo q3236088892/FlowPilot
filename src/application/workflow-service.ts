@@ -521,7 +521,8 @@ export class WorkflowService {
 
     await this.repo.cleanupInjections();
     this.repo.cleanTags();
-    const commitResult = this.repo.commit('finish', data.name || '工作流完成', `${stats}\n\n${titles}`);
+    const changedFiles = this.repo.listChangedFiles();
+    const commitResult = this.repo.commit('finish', data.name || '工作流完成', `${stats}\n\n${titles}`, changedFiles);
     if (commitResult.status !== 'failed') {
       await this.repo.clearAll();
     }
