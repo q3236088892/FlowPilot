@@ -95,11 +95,12 @@ describe('FsWorkflowRepository', () => {
     expect(content).not.toContain('flowpilot:start');
   });
 
-  it('cleanupInjections 移除 hooks', async () => {
+  it('cleanupInjections 不移除 hooks', async () => {
     await repo.ensureHooks();
     await repo.cleanupInjections();
     const settings = JSON.parse(await readFile(join(dir, '.claude', 'settings.json'), 'utf-8'));
-    expect(settings.hooks?.PreToolUse).toBeUndefined();
+    expect(settings.hooks.PreToolUse).toHaveLength(3);
+    expect(settings.hooks.PreToolUse[0].matcher).toBe('TaskCreate');
   });
 
   it('history 保存和加载', async () => {
@@ -117,9 +118,18 @@ describe('FsWorkflowRepository', () => {
   it('ensureHooks 写入 settings.json', async () => {
     const wrote = await repo.ensureHooks();
     expect(wrote).toBe(true);
+    expect(existsSync(join(dir, '.claude', 'settings.json'))).toBe(true);
     const settings = JSON.parse(await readFile(join(dir, '.claude', 'settings.json'), 'utf-8'));
     expect(settings.hooks.PreToolUse).toHaveLength(3);
     expect(settings.hooks.PreToolUse[0].matcher).toBe('TaskCreate');
+  });
+
+  it('ensureHooks 幂等追加 hooks', async () => {
+    await repo.ensureHooks();
+    const wrote = await repo.ensureHooks();
+    expect(wrote).toBe(false);
+    const settings = JSON.parse(await readFile(join(dir, '.claude', 'settings.json'), 'utf-8'));
+    expect(settings.hooks.PreToolUse).toHaveLength(3);
   });
 
   it('lock/unlock 基本流程', async () => {
