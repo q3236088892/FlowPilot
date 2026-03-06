@@ -9,16 +9,73 @@ var import_fs = require("fs");
 // src/infrastructure/git.ts
 var import_node_child_process = require("child_process");
 var import_node_fs = require("fs");
-function getSubmodules() {
-  if (!(0, import_node_fs.existsSync)(".gitmodules")) return [];
-  const out = (0, import_node_child_process.execFileSync)("git", ["submodule", "--quiet", "foreach", "echo $sm_path"], { stdio: "pipe", encoding: "utf-8" });
-  return out.split("\n").filter(Boolean);
+var import_node_path = require("path");
+var FLOWPILOT_RUNTIME_PREFIXES = [".flowpilot/", ".workflow/"];
+var FLOWPILOT_RUNTIME_FILES = /* @__PURE__ */ new Set([".claude/settings.json"]);
+function normalizeGitPath(file) {
+  return file.trim().replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\/+/, "");
+}
+function isFlowPilotRuntimePath(file) {
+  const norm = normalizeGitPath(file);
+  return FLOWPILOT_RUNTIME_FILES.has(norm) || FLOWPILOT_RUNTIME_PREFIXES.some((prefix) => norm === prefix.slice(0, -1) || norm.startsWith(prefix));
+}
+function filterCommitFiles(files) {
+  const seen = /* @__PURE__ */ new Set();
+  const result = [];
+  for (const file of files) {
+    const norm = normalizeGitPath(file);
+    if (!norm || isFlowPilotRuntimePath(norm) || seen.has(norm)) continue;
+    seen.add(norm);
+    result.push(norm);
+  }
+  return result;
+}
+function hasCachedChanges(cwd, files) {
+  try {
+    (0, import_node_child_process.execFileSync)("git", ["diff", "--cached", "--quiet", "--", ...files], { stdio: "pipe", cwd });
+    return false;
+  } catch (e) {
+    if (e?.status === 1) return true;
+    throw e;
+  }
+}
+function readGitPaths(cwd, args) {
+  try {
+    const out = (0, import_node_child_process.execFileSync)("git", args, { stdio: "pipe", cwd, encoding: "utf-8" });
+    return out.split("\n").map(normalizeGitPath).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+function getSubmodules(cwd = process.cwd()) {
+  if (!(0, import_node_fs.existsSync)((0, import_node_path.join)(cwd, ".gitmodules"))) return [];
+  const out = (0, import_node_child_process.execFileSync)("git", ["submodule", "--quiet", "foreach", "echo $sm_path"], { stdio: "pipe", cwd, encoding: "utf-8" });
+  return out.split("\n").map(normalizeGitPath).filter(Boolean);
+}
+function listDirtySubmoduleFiles(cwd, submodulePath) {
+  const submoduleCwd = (0, import_node_path.join)(cwd, submodulePath);
+  const groups = [
+    readGitPaths(submoduleCwd, ["diff", "--name-only", "--cached"]),
+    readGitPaths(submoduleCwd, ["diff", "--name-only"]),
+    readGitPaths(submoduleCwd, ["ls-files", "--others", "--exclude-standard"])
+  ];
+  const seen = /* @__PURE__ */ new Set();
+  const result = [];
+  for (const group of groups) {
+    for (const file of group) {
+      const fullPath = normalizeGitPath(`${submodulePath}/${file}`);
+      if (seen.has(fullPath)) continue;
+      seen.add(fullPath);
+      result.push(fullPath);
+    }
+  }
+  return result;
 }
 function groupBySubmodule(files, submodules) {
   const sorted = [...submodules].sort((a, b) => b.length - a.length);
   const groups = /* @__PURE__ */ new Map();
   for (const f of files) {
-    const norm = f.replace(/\\/g, "/");
+    const norm = normalizeGitPath(f);
     const sub = sorted.find((s) => norm.startsWith(s + "/"));
     const key = sub ?? "";
     const rel = sub ? norm.slice(sub.length + 1) : norm;
@@ -26,115 +83,130 @@ function groupBySubmodule(files, submodules) {
   }
   return groups;
 }
+function skipped(reason) {
+  return { status: "skipped", reason };
+}
 function commitIn(cwd, files, msg) {
   const opts = { stdio: "pipe", cwd, encoding: "utf-8" };
+  if (!files.length) return skipped("runtime-only");
   try {
-    if (files) {
-      for (const f of files) (0, import_node_child_process.execFileSync)("git", ["add", f], opts);
-    } else {
-      (0, import_node_child_process.execFileSync)("git", ["add", "-A"], opts);
+    for (const f of files) (0, import_node_child_process.execFileSync)("git", ["add", "--", f], opts);
+    if (!hasCachedChanges(cwd, files)) {
+      return skipped("no-staged-changes");
     }
-    const status = (0, import_node_child_process.execSync)("git diff --cached --quiet || echo HAS_CHANGES", opts).trim();
-    if (status === "HAS_CHANGES") {
-      (0, import_node_child_process.execFileSync)("git", ["commit", "-F", "-"], { ...opts, input: msg });
-    }
-    return null;
+    (0, import_node_child_process.execFileSync)("git", ["commit", "-F", "-", "--", ...files], { ...opts, input: msg });
+    return { status: "committed" };
   } catch (e) {
-    return `${cwd}: ${e.stderr?.toString?.() || e.message}`;
+    return { status: "failed", error: `${cwd}: ${e.stderr?.toString?.() || e.message}` };
   }
 }
 function gitCleanup() {
-  try {
-    const status = (0, import_node_child_process.execSync)("git status --porcelain", { stdio: "pipe", encoding: "utf-8" }).trim();
-    if (status) {
-      (0, import_node_child_process.execSync)('git stash push -m "flowpilot-resume: auto-stashed on interrupt recovery"', { stdio: "pipe" });
-    }
-  } catch {
-  }
 }
-function tagTask(taskId) {
+function listChangedFiles(cwd = process.cwd()) {
+  const seen = /* @__PURE__ */ new Set();
+  const result = [];
+  const submodules = getSubmodules(cwd);
+  const submoduleSet = new Set(submodules);
+  const groups = [
+    readGitPaths(cwd, ["diff", "--name-only", "--cached"]),
+    readGitPaths(cwd, ["diff", "--name-only"]),
+    readGitPaths(cwd, ["ls-files", "--others", "--exclude-standard"])
+  ];
+  for (const group of groups) {
+    for (const file of group) {
+      if (submoduleSet.has(file)) {
+        for (const nestedFile of listDirtySubmoduleFiles(cwd, file)) {
+          if (seen.has(nestedFile)) continue;
+          seen.add(nestedFile);
+          result.push(nestedFile);
+        }
+        continue;
+      }
+      if (seen.has(file)) continue;
+      seen.add(file);
+      result.push(file);
+    }
+  }
+  return result;
+}
+function tagTask(taskId, cwd = process.cwd()) {
   try {
-    (0, import_node_child_process.execFileSync)("git", ["tag", `flowpilot/task-${taskId}`], { stdio: "pipe" });
+    (0, import_node_child_process.execFileSync)("git", ["tag", `flowpilot/task-${taskId}`], { stdio: "pipe", cwd });
     return null;
   } catch (e) {
     return e.stderr?.toString?.() || e.message;
   }
 }
-function rollbackToTask(taskId) {
+function rollbackToTask(taskId, cwd = process.cwd()) {
   const tag = `flowpilot/task-${taskId}`;
   try {
-    (0, import_node_child_process.execFileSync)("git", ["rev-parse", tag], { stdio: "pipe" });
-    const log2 = (0, import_node_child_process.execFileSync)("git", ["log", "--oneline", `${tag}..HEAD`], { stdio: "pipe", encoding: "utf-8" }).trim();
+    (0, import_node_child_process.execFileSync)("git", ["rev-parse", tag], { stdio: "pipe", cwd });
+    const log2 = (0, import_node_child_process.execFileSync)("git", ["log", "--oneline", `${tag}..HEAD`], { stdio: "pipe", cwd, encoding: "utf-8" }).trim();
     if (!log2) return "\u6CA1\u6709\u9700\u8981\u56DE\u6EDA\u7684\u63D0\u4EA4";
-    (0, import_node_child_process.execFileSync)("git", ["revert", "--no-commit", `${tag}..HEAD`], { stdio: "pipe" });
-    (0, import_node_child_process.execFileSync)("git", ["commit", "-m", `rollback: revert to task-${taskId}`], { stdio: "pipe" });
+    (0, import_node_child_process.execFileSync)("git", ["revert", "--no-commit", `${tag}..HEAD`], { stdio: "pipe", cwd });
+    (0, import_node_child_process.execFileSync)("git", ["commit", "-m", `rollback: revert to task-${taskId}`], { stdio: "pipe", cwd });
     return null;
   } catch (e) {
     try {
-      (0, import_node_child_process.execFileSync)("git", ["revert", "--abort"], { stdio: "pipe" });
+      (0, import_node_child_process.execFileSync)("git", ["revert", "--abort"], { stdio: "pipe", cwd });
     } catch {
     }
     return e.stderr?.toString?.() || e.message;
   }
 }
-function cleanTags() {
+function cleanTags(cwd = process.cwd()) {
   try {
-    const tags = (0, import_node_child_process.execFileSync)("git", ["tag", "-l", "flowpilot/*"], { stdio: "pipe", encoding: "utf-8" }).trim();
+    const tags = (0, import_node_child_process.execFileSync)("git", ["tag", "-l", "flowpilot/*"], { stdio: "pipe", cwd, encoding: "utf-8" }).trim();
     if (!tags) return;
     for (const t of tags.split("\n")) {
-      if (t) (0, import_node_child_process.execFileSync)("git", ["tag", "-d", t], { stdio: "pipe" });
+      if (t) (0, import_node_child_process.execFileSync)("git", ["tag", "-d", t], { stdio: "pipe", cwd });
     }
   } catch {
   }
 }
-function autoCommit(taskId, title, summary, files) {
+function autoCommit(taskId, title, summary, files, cwd = process.cwd()) {
   const msg = `task-${taskId}: ${title}
 
 ${summary}`;
-  const errors = [];
-  const submodules = getSubmodules();
+  if (!files?.length) return skipped("no-files");
+  const commitFiles = filterCommitFiles(files);
+  if (!commitFiles.length) return skipped("runtime-only");
+  const submodules = getSubmodules(cwd);
   if (!submodules.length) {
-    const err = commitIn(process.cwd(), files?.length ? files : null, msg);
-    return err;
+    return commitIn(cwd, commitFiles, msg);
   }
-  if (files?.length) {
-    const groups = groupBySubmodule(files, submodules);
-    for (const [sub, subFiles] of groups) {
-      if (sub) {
-        const err = commitIn(sub, subFiles, msg);
-        if (err) errors.push(err);
-      }
-    }
-    try {
-      const parentFiles = groups.get("") ?? [];
-      const touchedSubs = [...groups.keys()].filter((k) => k !== "");
-      for (const s of touchedSubs) (0, import_node_child_process.execFileSync)("git", ["add", s], { stdio: "pipe" });
-      for (const f of parentFiles) (0, import_node_child_process.execFileSync)("git", ["add", f], { stdio: "pipe" });
-      const status = (0, import_node_child_process.execSync)("git diff --cached --quiet || echo HAS_CHANGES", { stdio: "pipe", encoding: "utf-8" }).trim();
-      if (status === "HAS_CHANGES") {
-        (0, import_node_child_process.execFileSync)("git", ["commit", "-F", "-"], { stdio: "pipe", input: msg });
-      }
-    } catch (e) {
-      errors.push(`parent: ${e.stderr?.toString?.() || e.message}`);
-    }
-  } else {
-    for (const sub of submodules) {
-      const err2 = commitIn(sub, null, msg);
-      if (err2) errors.push(err2);
-    }
-    const err = commitIn(process.cwd(), null, msg);
-    if (err) errors.push(err);
+  const groups = groupBySubmodule(commitFiles, submodules);
+  const results = [];
+  for (const [sub, subFiles] of groups) {
+    if (!sub) continue;
+    results.push(commitIn((0, import_node_path.join)(cwd, sub), subFiles, msg));
   }
-  return errors.length ? errors.join("\n") : null;
+  const parentFiles = groups.get("") ?? [];
+  const touchedSubs = [...groups.keys()].filter((k) => k !== "");
+  const parentTargets = [...touchedSubs, ...parentFiles];
+  if (parentTargets.length) {
+    results.push(commitIn(cwd, parentTargets, msg));
+  }
+  const failures = results.filter((result) => result.status === "failed" && Boolean(result.error));
+  if (failures.length) {
+    return { status: "failed", error: failures.map((result) => result.error).join("\n") };
+  }
+  if (results.some((result) => result.status === "committed")) {
+    return { status: "committed" };
+  }
+  if (results.some((result) => result.status === "skipped" && result.reason === "no-staged-changes")) {
+    return skipped("no-staged-changes");
+  }
+  return skipped("runtime-only");
 }
 
 // src/infrastructure/verify.ts
 var import_node_child_process2 = require("child_process");
 var import_node_fs2 = require("fs");
-var import_node_path = require("path");
+var import_node_path2 = require("path");
 function loadConfig(cwd) {
   try {
-    const raw = (0, import_node_fs2.readFileSync)((0, import_node_path.join)(cwd, ".workflow", "config.json"), "utf-8");
+    const raw = (0, import_node_fs2.readFileSync)((0, import_node_path2.join)(cwd, ".workflow", "config.json"), "utf-8");
     const cfg = JSON.parse(raw);
     return cfg?.verify ?? {};
   } catch {
@@ -143,7 +215,7 @@ function loadConfig(cwd) {
 }
 function runVerify(cwd) {
   const config = loadConfig(cwd);
-  const cmds = config.commands?.length ? config.commands : detectCommands(cwd);
+  const cmds = normalizeCommands(cwd, config.commands?.length ? config.commands : detectCommands(cwd));
   const timeout = (config.timeout ?? 300) * 1e3;
   if (!cmds.length) return { passed: true, scripts: [] };
   for (const cmd of cmds) {
@@ -161,11 +233,33 @@ ${out.slice(0, 500)}` };
   }
   return { passed: true, scripts: cmds };
 }
+function normalizeCommands(cwd, commands) {
+  const testScript = loadPackageScripts(cwd).test;
+  return commands.map((command) => shouldForceVitestRun(command, testScript) ? "npm run test -- --run" : command);
+}
+function loadPackageScripts(cwd) {
+  try {
+    const pkg = JSON.parse((0, import_node_fs2.readFileSync)((0, import_node_path2.join)(cwd, "package.json"), "utf-8"));
+    const scripts = pkg?.scripts;
+    if (!scripts || typeof scripts !== "object" || Array.isArray(scripts)) return {};
+    return Object.fromEntries(
+      Object.entries(scripts).filter((entry) => typeof entry[1] === "string")
+    );
+  } catch {
+    return {};
+  }
+}
+function shouldForceVitestRun(command, testScript) {
+  if (command !== "npm run test" || !testScript) return false;
+  const normalizedScript = testScript.replace(/\s+/g, " ").trim();
+  if (!/\bvitest\b/.test(normalizedScript)) return false;
+  return !/\bvitest\b.*(?:\s|^)(?:run\b|--run\b)/.test(normalizedScript);
+}
 function detectCommands(cwd) {
-  const has = (f) => (0, import_node_fs2.existsSync)((0, import_node_path.join)(cwd, f));
+  const has = (f) => (0, import_node_fs2.existsSync)((0, import_node_path2.join)(cwd, f));
   if (has("package.json")) {
     try {
-      const s = JSON.parse((0, import_node_fs2.readFileSync)((0, import_node_path.join)(cwd, "package.json"), "utf-8")).scripts || {};
+      const s = JSON.parse((0, import_node_fs2.readFileSync)((0, import_node_path2.join)(cwd, "package.json"), "utf-8")).scripts || {};
       return ["build", "test", "lint"].filter((k) => k in s).map((k) => `npm run ${k}`);
     } catch {
     }
@@ -176,7 +270,7 @@ function detectCommands(cwd) {
     const cmds = [];
     if (has("pyproject.toml")) {
       try {
-        const txt = (0, import_node_fs2.readFileSync)((0, import_node_path.join)(cwd, "pyproject.toml"), "utf-8");
+        const txt = (0, import_node_fs2.readFileSync)((0, import_node_path2.join)(cwd, "pyproject.toml"), "utf-8");
         if (txt.includes("ruff")) cmds.push("ruff check .");
         if (txt.includes("mypy")) cmds.push("mypy .");
       } catch {
@@ -190,7 +284,7 @@ function detectCommands(cwd) {
   if (has("CMakeLists.txt")) return ["cmake --build build", "ctest --test-dir build"];
   if (has("Makefile")) {
     try {
-      const mk = (0, import_node_fs2.readFileSync)((0, import_node_path.join)(cwd, "Makefile"), "utf-8");
+      const mk = (0, import_node_fs2.readFileSync)((0, import_node_path2.join)(cwd, "Makefile"), "utf-8");
       const targets = [];
       if (/^build\s*:/m.test(mk)) targets.push("make build");
       if (/^test\s*:/m.test(mk)) targets.push("make test");
@@ -496,30 +590,42 @@ var FsWorkflowRepository = class {
   async ensureHooks() {
     const dir = (0, import_path.join)(this.base, ".claude");
     const path = (0, import_path.join)(dir, "settings.json");
-    const hook = (m) => ({
-      matcher: m,
-      hooks: [{ type: "prompt", prompt: "BLOCK this tool call. FlowPilot requires using node flow.js commands instead of native task tools." }]
-    });
-    const required = {
-      PreToolUse: [hook("TaskCreate"), hook("TaskUpdate"), hook("TaskList")]
-    };
     let settings = {};
     try {
       const parsed = JSON.parse(await (0, import_promises.readFile)(path, "utf-8"));
-      if (parsed && typeof parsed === "object" && !("__proto__" in parsed) && !("constructor" in parsed)) settings = parsed;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && !Object.prototype.hasOwnProperty.call(parsed, "__proto__") && !Object.prototype.hasOwnProperty.call(parsed, "constructor")) {
+        settings = parsed;
+      }
     } catch {
     }
-    const hooks = settings.hooks ?? {};
-    const existing = hooks.PreToolUse;
-    if (existing?.some((h) => h.matcher === required.PreToolUse[0].matcher)) return false;
-    hooks.PreToolUse = [...existing ?? [], ...required.PreToolUse];
-    settings.hooks = hooks;
-    await (0, import_promises.mkdir)(dir, { recursive: true });
-    await (0, import_promises.writeFile)(path, JSON.stringify(settings, null, 2) + "\n", "utf-8");
+    const hook = (matcher) => ({
+      matcher,
+      hooks: [{ type: "prompt", prompt: "BLOCK this tool call. FlowPilot requires using node flow.js commands instead of native task tools." }]
+    });
+    const requiredPreToolUse = [hook("TaskCreate"), hook("TaskUpdate"), hook("TaskList")];
+    const currentHooks = settings.hooks;
+    const hooks = currentHooks && typeof currentHooks === "object" && !Array.isArray(currentHooks) ? currentHooks : {};
+    const currentPreToolUse = hooks.PreToolUse;
+    const existingPreToolUse = Array.isArray(currentPreToolUse) ? currentPreToolUse : [];
+    const existingMatchers = new Set(existingPreToolUse.map((entry) => entry.matcher).filter((matcher) => Boolean(matcher)));
+    const missingPreToolUse = requiredPreToolUse.filter((entry) => !existingMatchers.has(entry.matcher));
+    if (!missingPreToolUse.length) return false;
+    const nextSettings = {
+      ...settings,
+      hooks: {
+        ...hooks,
+        PreToolUse: [...existingPreToolUse, ...missingPreToolUse]
+      }
+    };
+    await this.ensure(dir);
+    await (0, import_promises.writeFile)(path, JSON.stringify(nextSettings, null, 2) + "\n", "utf-8");
     return true;
   }
+  listChangedFiles() {
+    return listChangedFiles(this.base);
+  }
   commit(taskId, title, summary, files) {
-    return autoCommit(taskId, title, summary, files);
+    return autoCommit(taskId, title, summary, files, this.base);
   }
   cleanup() {
     gitCleanup();
@@ -561,7 +667,7 @@ var FsWorkflowRepository = class {
     await this.ensure(this.root);
     await (0, import_promises.writeFile)((0, import_path.join)(this.root, "config.json"), JSON.stringify(config, null, 2) + "\n", "utf-8");
   }
-  /** 清理注入的CLAUDE.md协议块和.claude/settings.json hooks */
+  /** 清理注入的 CLAUDE.md 协议块；运行期不回写 .claude/* */
   async cleanupInjections() {
     const mdPath = (0, import_path.join)(this.base, "CLAUDE.md");
     try {
@@ -570,29 +676,15 @@ var FsWorkflowRepository = class {
       if (cleaned !== content) await (0, import_promises.writeFile)(mdPath, cleaned.replace(/\n{3,}/g, "\n\n").trimEnd() + "\n", "utf-8");
     } catch {
     }
-    const settingsPath = (0, import_path.join)(this.base, ".claude", "settings.json");
-    try {
-      const raw = await (0, import_promises.readFile)(settingsPath, "utf-8");
-      const settings = JSON.parse(raw);
-      const hooks = settings.hooks?.PreToolUse;
-      if (hooks) {
-        const flowpilotMatchers = /* @__PURE__ */ new Set(["TaskCreate", "TaskUpdate", "TaskList"]);
-        settings.hooks.PreToolUse = hooks.filter((h) => !flowpilotMatchers.has(h.matcher ?? ""));
-        if (!settings.hooks.PreToolUse.length) delete settings.hooks.PreToolUse;
-        if (!Object.keys(settings.hooks).length) delete settings.hooks;
-        await (0, import_promises.writeFile)(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf-8");
-      }
-    } catch {
-    }
   }
   tag(taskId) {
-    return tagTask(taskId);
+    return tagTask(taskId, this.base);
   }
   rollback(taskId) {
-    return rollbackToTask(taskId);
+    return rollbackToTask(taskId, this.base);
   }
   cleanTags() {
-    cleanTags();
+    cleanTags(this.base);
   }
   // --- .flowpilot/evolution/ 进化日志 ---
   async saveEvolution(entry) {
@@ -1288,9 +1380,9 @@ function fourDimensionAnalysis(stats) {
   if (topKw.length) {
     findings.push(`[patterns] \u9AD8\u9891\u5173\u952E\u8BCD: ${topKw.map(([w, c]) => `${w}(${c})`).join(", ")}`);
   }
-  const skipped = results.filter((r) => r.status === "skipped");
-  if (skipped.length) {
-    findings.push(`[gaps] ${skipped.length} \u4E2A\u4EFB\u52A1\u88AB\u8DF3\u8FC7: ${skipped.map((r) => r.id).join(",")}`);
+  const skipped2 = results.filter((r) => r.status === "skipped");
+  if (skipped2.length) {
+    findings.push(`[gaps] ${skipped2.length} \u4E2A\u4EFB\u52A1\u88AB\u8DF3\u8FC7: ${skipped2.map((r) => r.id).join(",")}`);
   }
   let chain = 0, maxChain = 0;
   for (const r of results) {
@@ -2937,18 +3029,12 @@ ${detail}
         await this.saveLoopWarning(`[LOOP WARNING - ${loopResult.strategy}] ${loopResult.message}`);
       }
       await this.updateSummary(newData);
-      const commitErr = this.repo.commit(id, task.title, summaryLine, files);
-      if (!commitErr) this.repo.tag(id);
+      const commitResult = this.repo.commit(id, task.title, summaryLine, files);
+      if (commitResult.status === "committed") this.repo.tag(id);
       await runLifecycleHook("onTaskComplete", this.repo.projectRoot(), { TASK_ID: id, TASK_TITLE: task.title });
       const doneCount = newData.tasks.filter((t) => t.status === "done").length;
       let msg = `\u4EFB\u52A1 ${id} \u5B8C\u6210 (${doneCount}/${newData.tasks.length})`;
-      if (commitErr) {
-        msg += `
-[git\u63D0\u4EA4\u5931\u8D25] ${commitErr}
-\u8BF7\u6839\u636E\u9519\u8BEF\u4FEE\u590D\u540E\u624B\u52A8\u6267\u884C git add -A && git commit`;
-      } else {
-        msg += " [\u5DF2\u81EA\u52A8\u63D0\u4EA4]";
-      }
+      msg += this.formatCommitMessage(commitResult, "task");
       return isAllDone(newData.tasks) ? msg + "\n\u5168\u90E8\u4EFB\u52A1\u5DF2\u5B8C\u6210\uFF0C\u8BF7\u6267\u884C node flow.js finish \u8FDB\u884C\u6536\u5C3E" : msg;
     } finally {
       await this.repo.unlock();
@@ -3074,9 +3160,9 @@ ${detail}
       return "\u9A8C\u8BC1\u901A\u8FC7\uFF0C\u8BF7\u6D3E\u5B50Agent\u6267\u884C code-review\uFF0C\u5B8C\u6210\u540E\u6267\u884C node flow.js review\uFF0C\u518D\u6267\u884C node flow.js finish";
     }
     const done = data.tasks.filter((t) => t.status === "done");
-    const skipped = data.tasks.filter((t) => t.status === "skipped");
+    const skipped2 = data.tasks.filter((t) => t.status === "skipped");
     const failed = data.tasks.filter((t) => t.status === "failed");
-    const stats = [`${done.length} done`, skipped.length ? `${skipped.length} skipped` : "", failed.length ? `${failed.length} failed` : ""].filter(Boolean).join(", ");
+    const stats = [`${done.length} done`, skipped2.length ? `${skipped2.length} skipped` : "", failed.length ? `${failed.length} failed` : ""].filter(Boolean).join(", ");
     const titles = done.map((t) => `- ${t.id}: ${t.title}`).join("\n");
     await runLifecycleHook("onWorkflowFinish", this.repo.projectRoot(), { WORKFLOW_NAME: data.name });
     const wfStats = collectStats(data);
@@ -3100,23 +3186,38 @@ ${detail}
     }
     await this.repo.cleanupInjections();
     this.repo.cleanTags();
-    const commitErr = this.repo.commit("finish", data.name || "\u5DE5\u4F5C\u6D41\u5B8C\u6210", `${stats}
+    const changedFiles = this.repo.listChangedFiles();
+    const commitResult = this.repo.commit("finish", data.name || "\u5DE5\u4F5C\u6D41\u5B8C\u6210", `${stats}
 
-${titles}`);
-    if (!commitErr) {
+${titles}`, changedFiles);
+    if (commitResult.status !== "failed") {
       await this.repo.clearAll();
     }
     const scripts = result.scripts.length ? result.scripts.join(", ") : "\u65E0\u9A8C\u8BC1\u811A\u672C";
-    if (commitErr) {
-      return `\u9A8C\u8BC1\u901A\u8FC7: ${scripts}
-${stats}
-[git\u63D0\u4EA4\u5931\u8D25] ${commitErr}
-\u8BF7\u6839\u636E\u9519\u8BEF\u4FEE\u590D\u540E\u624B\u52A8\u6267\u884C git add -A && git commit`;
-    }
     return `\u9A8C\u8BC1\u901A\u8FC7: ${scripts}
-${stats}
-\u5DF2\u63D0\u4EA4\u6700\u7EC8commit\uFF0C\u5DE5\u4F5C\u6D41\u56DE\u5230\u5F85\u547D\u72B6\u6001
+${stats}${this.formatCommitMessage(commitResult, "finish")}
+\u5DE5\u4F5C\u6D41\u56DE\u5230\u5F85\u547D\u72B6\u6001
 \u7B49\u5F85\u4E0B\u4E00\u4E2A\u9700\u6C42...`;
+  }
+  /** 将 git 提交结果映射为面向用户的真实提示语 */
+  formatCommitMessage(result, stage) {
+    if (result.status === "committed") {
+      return stage === "task" ? " [\u5DF2\u81EA\u52A8\u63D0\u4EA4]" : "\n\u5DF2\u63D0\u4EA4\u6700\u7EC8commit";
+    }
+    if (result.status === "failed") {
+      return `
+[git\u63D0\u4EA4\u5931\u8D25] ${result.error}
+\u8BF7\u6839\u636E\u9519\u8BEF\u4FEE\u590D\u540E\u624B\u52A8\u68C0\u67E5\u5E76\u63D0\u4EA4\u9700\u8981\u7684\u6587\u4EF6`;
+    }
+    const reasonMap = {
+      "no-files": "\u672A\u63D0\u4F9B --files\uFF0C\u672A\u81EA\u52A8\u63D0\u4EA4",
+      "runtime-only": "\u4EC5\u68C0\u6D4B\u5230 FlowPilot \u8FD0\u884C\u65F6\u6587\u4EF6\uFF0C\u672A\u81EA\u52A8\u63D0\u4EA4",
+      "no-staged-changes": "\u6307\u5B9A\u6587\u4EF6\u65E0\u53EF\u63D0\u4EA4\u53D8\u66F4\uFF0C\u672A\u81EA\u52A8\u63D0\u4EA4"
+    };
+    const reason = result.reason ? reasonMap[result.reason] : "\u672A\u81EA\u52A8\u63D0\u4EA4";
+    return stage === "task" ? `
+[\u672A\u81EA\u52A8\u63D0\u4EA4] ${reason}` : `
+\u672A\u63D0\u4EA4\u6700\u7EC8commit\uFF1A${reason}`;
   }
   /** rollback: 回滚到指定任务的快照 */
   async rollback(id) {
