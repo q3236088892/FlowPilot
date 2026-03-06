@@ -3,8 +3,48 @@
  * @description Git 自动提交 - 支持子模块的细粒度提交
  */
 
-import { execSync, execFileSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import type { CommitResult, CommitSkipReason } from '../domain/repository';
+
+const FLOWPILOT_RUNTIME_PREFIXES = ['.flowpilot/', '.workflow/'];
+const FLOWPILOT_RUNTIME_FILES = new Set(['.claude/settings.json']);
+
+/** 统一 git 路径格式，避免 Windows 分隔符和 ./ 前缀影响判断 */
+function normalizeGitPath(file: string): string {
+  return file.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
+}
+
+/** 判断是否为 FlowPilot 运行时产物，自动提交/自动恢复都应跳过 */
+function isFlowPilotRuntimePath(file: string): boolean {
+  const norm = normalizeGitPath(file);
+  return FLOWPILOT_RUNTIME_FILES.has(norm)
+    || FLOWPILOT_RUNTIME_PREFIXES.some(prefix => norm === prefix.slice(0, -1) || norm.startsWith(prefix));
+}
+
+/** 过滤显式文件列表：去重、规范化，并排除 FlowPilot 运行时产物 */
+function filterCommitFiles(files: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const file of files) {
+    const norm = normalizeGitPath(file);
+    if (!norm || isFlowPilotRuntimePath(norm) || seen.has(norm)) continue;
+    seen.add(norm);
+    result.push(norm);
+  }
+  return result;
+}
+
+/** 检查指定 pathspec 是否存在已暂存改动 */
+function hasCachedChanges(cwd: string, files: string[]): boolean {
+  try {
+    execFileSync('git', ['diff', '--cached', '--quiet', '--', ...files], { stdio: 'pipe', cwd });
+    return false;
+  } catch (e: any) {
+    if (e?.status === 1) return true;
+    throw e;
+  }
+}
 
 /** 获取所有子模块路径，无 .gitmodules 时返回空数组，有但命令失败时抛出 */
 function getSubmodules(): string[] {
@@ -18,7 +58,7 @@ function groupBySubmodule(files: string[], submodules: string[]): Map<string, st
   const sorted = [...submodules].sort((a, b) => b.length - a.length);
   const groups = new Map<string, string[]>();
   for (const f of files) {
-    const norm = f.replace(/\\/g, '/');
+    const norm = normalizeGitPath(f);
     const sub = sorted.find(s => norm.startsWith(s + '/'));
     const key = sub ?? '';
     const rel = sub ? norm.slice(sub.length + 1) : norm;
@@ -27,34 +67,39 @@ function groupBySubmodule(files: string[], submodules: string[]): Map<string, st
   return groups;
 }
 
-/** 在指定目录执行 git add + commit，返回错误信息或null */
-function commitIn(cwd: string, files: string[] | null, msg: string): string | null {
+/** 构造 skipped 结果 */
+function skipped(reason: CommitSkipReason): CommitResult {
+  return { status: 'skipped', reason };
+}
+
+/** 在指定目录执行 git add + commit，返回显式结果 */
+function commitIn(cwd: string, files: string[], msg: string): CommitResult {
   const opts = { stdio: 'pipe' as const, cwd, encoding: 'utf-8' as const };
+  if (!files.length) return skipped('runtime-only');
   try {
-    if (files) {
-      for (const f of files) execFileSync('git', ['add', f], opts);
-    } else {
-      execFileSync('git', ['add', '-A'], opts);
+    for (const f of files) execFileSync('git', ['add', '--', f], opts);
+    if (!hasCachedChanges(cwd, files)) {
+      return skipped('no-staged-changes');
     }
-    const status = execSync('git diff --cached --quiet || echo HAS_CHANGES', opts).trim();
-    if (status === 'HAS_CHANGES') {
-      execFileSync('git', ['commit', '-F', '-'], { ...opts, input: msg });
-    }
-    return null;
+    execFileSync('git', ['commit', '-F', '-', '--', ...files], { ...opts, input: msg });
+    return { status: 'committed' };
   } catch (e: any) {
-    return `${cwd}: ${e.stderr?.toString?.() || e.message}`;
+    return { status: 'failed', error: `${cwd}: ${e.stderr?.toString?.() || e.message}` };
   }
 }
 
-/** 清理未提交的变更（resume时调用），用stash保留而非丢弃 */
-export function gitCleanup(): void {
-  try {
-    const status = execSync('git status --porcelain', { stdio: 'pipe', encoding: 'utf-8' }).trim();
-    if (status) {
-      execSync('git stash push -m "flowpilot-resume: auto-stashed on interrupt recovery"', { stdio: 'pipe' });
-    }
-  } catch {}
-}
+/**
+ * 中断恢复时不再自动 stash 整个工作区。
+ * 旧逻辑会把用户显式删除的文件一并 stash，导致文件立刻从工作区“复活”。
+ * 现在保守地保持用户工作区原样，避免 FlowPilot 越权处理用户改动。
+ */
+export function gitCleanup(): void {}
+
+export const __testables = {
+  normalizeGitPath,
+  isFlowPilotRuntimePath,
+  filterCommitFiles,
+};
 
 /** 为任务打轻量 tag，返回错误信息或null */
 export function tagTask(taskId: string): string | null {
@@ -93,46 +138,45 @@ export function cleanTags(): void {
   } catch {}
 }
 
-/** 自动 git add + commit，返回错误信息或null */
-export function autoCommit(taskId: string, title: string, summary: string, files?: string[]): string | null {
-  const msg = `task-${taskId}: ${title}\n\n${summary}`;
-  const errors: string[] = [];
+/** 自动 git add + commit，返回真实提交结果 */
+export function autoCommit(taskId: string, title: string, summary: string, files?: string[]): CommitResult {
+  const msg = `task-${taskId}: ${title}
+
+${summary}`;
+  if (!files?.length) return skipped('no-files');
+
+  const commitFiles = filterCommitFiles(files);
+  if (!commitFiles.length) return skipped('runtime-only');
+
   const submodules = getSubmodules();
-
   if (!submodules.length) {
-    const err = commitIn(process.cwd(), files?.length ? files : null, msg);
-    return err;
+    return commitIn(process.cwd(), commitFiles, msg);
   }
 
-  if (files?.length) {
-    const groups = groupBySubmodule(files, submodules);
-    for (const [sub, subFiles] of groups) {
-      if (sub) {
-        const err = commitIn(sub, subFiles, msg);
-        if (err) errors.push(err);
-      }
-    }
-    // 父仓库：提交父仓库自身文件 + 更新子模块指针
-    try {
-      const parentFiles = groups.get('') ?? [];
-      const touchedSubs = [...groups.keys()].filter(k => k !== '');
-      for (const s of touchedSubs) execFileSync('git', ['add', s], { stdio: 'pipe' });
-      for (const f of parentFiles) execFileSync('git', ['add', f], { stdio: 'pipe' });
-      const status = execSync('git diff --cached --quiet || echo HAS_CHANGES', { stdio: 'pipe', encoding: 'utf-8' }).trim();
-      if (status === 'HAS_CHANGES') {
-        execFileSync('git', ['commit', '-F', '-'], { stdio: 'pipe', input: msg });
-      }
-    } catch (e: any) {
-      errors.push(`parent: ${e.stderr?.toString?.() || e.message}`);
-    }
-  } else {
-    for (const sub of submodules) {
-      const err = commitIn(sub, null, msg);
-      if (err) errors.push(err);
-    }
-    const err = commitIn(process.cwd(), null, msg);
-    if (err) errors.push(err);
+  const groups = groupBySubmodule(commitFiles, submodules);
+  const results: CommitResult[] = [];
+
+  for (const [sub, subFiles] of groups) {
+    if (!sub) continue;
+    results.push(commitIn(sub, subFiles, msg));
   }
 
-  return errors.length ? errors.join('\n') : null;
+  const parentFiles = groups.get('') ?? [];
+  const touchedSubs = [...groups.keys()].filter(k => k !== '');
+  const parentTargets = [...touchedSubs, ...parentFiles];
+  if (parentTargets.length) {
+    results.push(commitIn(process.cwd(), parentTargets, msg));
+  }
+
+  const failures = results.filter((result): result is CommitResult & { status: 'failed'; error: string } => result.status === 'failed' && Boolean(result.error));
+  if (failures.length) {
+    return { status: 'failed', error: failures.map(result => result.error).join('\n') };
+  }
+  if (results.some(result => result.status === 'committed')) {
+    return { status: 'committed' };
+  }
+  if (results.some(result => result.status === 'skipped' && result.reason === 'no-staged-changes')) {
+    return skipped('no-staged-changes');
+  }
+  return skipped('runtime-only');
 }
