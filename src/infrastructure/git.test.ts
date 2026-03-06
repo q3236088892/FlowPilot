@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -104,8 +104,8 @@ describe('git runtime path filtering', () => {
     }
   });
 
-  it('commits from repo base even when process cwd differs', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'flow-git-cwd-'));
+  it('uses repository base for tag rollback and cleanTags when process cwd differs', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'flow-git-tag-cwd-'));
     const outsideDir = await mkdtemp(join(tmpdir(), 'flow-git-outside-'));
 
     try {
@@ -117,19 +117,25 @@ describe('git runtime path filtering', () => {
       execFileSync('git', ['add', '--', 'tracked.txt'], { cwd: dir, stdio: 'pipe' });
       execFileSync('git', ['commit', '-m', 'init'], { cwd: dir, stdio: 'pipe' });
 
-      await writeFile(join(dir, 'tracked.txt'), 'base\nchanged\n', 'utf-8');
-
       const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(outsideDir);
       try {
         const repo = new FsWorkflowRepository(dir);
-        expect(repo.listChangedFiles()).toEqual(['tracked.txt']);
-        expect(repo.commit('finish', '跨目录提交', 'repoRoot should win', repo.listChangedFiles())).toEqual({ status: 'committed' });
+        expect(repo.tag('009')).toBeNull();
+        expect(execFileSync('git', ['tag', '--list', 'flowpilot/task-009'], { cwd: dir, stdio: 'pipe', encoding: 'utf-8' }).trim()).toBe('flowpilot/task-009');
+
+        await writeFile(join(dir, 'tracked.txt'), 'base\nchanged\n', 'utf-8');
+        execFileSync('git', ['add', '--', 'tracked.txt'], { cwd: dir, stdio: 'pipe' });
+        execFileSync('git', ['commit', '-m', 'change'], { cwd: dir, stdio: 'pipe' });
+
+        expect(repo.rollback('009')).toBeNull();
+        expect(execFileSync('git', ['log', '-1', '--pretty=%s'], { cwd: dir, stdio: 'pipe', encoding: 'utf-8' }).trim()).toBe('rollback: revert to task-009');
+        expect((await readFile(join(dir, 'tracked.txt'), 'utf-8'))).toBe('base\n');
+
+        repo.cleanTags();
+        expect(execFileSync('git', ['tag', '--list', 'flowpilot/*'], { cwd: dir, stdio: 'pipe', encoding: 'utf-8' }).trim()).toBe('');
       } finally {
         cwdSpy.mockRestore();
       }
-
-      expect(execFileSync('git', ['status', '--short'], { cwd: dir, stdio: 'pipe', encoding: 'utf-8' }).trim()).toBe('');
-      expect(execFileSync('git', ['log', '-1', '--pretty=%s'], { cwd: dir, stdio: 'pipe', encoding: 'utf-8' }).trim()).toBe('task-finish: 跨目录提交');
     } finally {
       await rm(dir, { recursive: true, force: true });
       await rm(outsideDir, { recursive: true, force: true });

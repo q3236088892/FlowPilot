@@ -330,9 +330,9 @@ export class FsWorkflowRepository implements WorkflowRepository {
     } catch {}
   }
 
-  tag(taskId: string): string | null { return tagTask(taskId); }
-  rollback(taskId: string): string | null { return rollbackToTask(taskId); }
-  cleanTags(): void { gitCleanTags(); }
+  tag(taskId: string): string | null { return tagTask(taskId, this.base); }
+  rollback(taskId: string): string | null { return rollbackToTask(taskId, this.base); }
+  cleanTags(): void { gitCleanTags(this.base); }
 
   // --- .flowpilot/evolution/ 进化日志 ---
 
