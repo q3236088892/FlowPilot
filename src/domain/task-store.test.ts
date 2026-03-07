@@ -212,4 +212,35 @@ describe('reopenRollbackBranch', () => {
       { ...t('006', 'done', ['002', '005']), summary: 'mixed-dependent', retries: 2 },
     ]);
   });
+
+  it('重置受影响分支中仍为pending或active的重试状态', () => {
+    const tasks: TaskEntry[] = [
+      { ...t('001', 'done'), summary: 'root', retries: 0 },
+      { ...t('002', 'done', ['001']), summary: 'target', retries: 1 },
+      { ...t('003', 'pending', ['002']), summary: 'stale-pending', retries: 2 },
+      { ...t('004', 'active', ['003']), summary: 'stale-active', retries: 1 },
+      { ...t('005', 'pending', ['001']), summary: 'unrelated-pending', retries: 2 },
+    ];
+
+    const reopenRollbackBranch = (taskStore as {
+      reopenRollbackBranch: (items: readonly TaskEntry[], id: string) => TaskEntry[];
+    }).reopenRollbackBranch;
+
+    const result = reopenRollbackBranch(tasks, '002');
+
+    expect(result).toEqual([
+      { ...tasks[0] },
+      { ...tasks[1], status: 'pending', summary: '', retries: 0 },
+      { ...tasks[2], status: 'pending', summary: '', retries: 0 },
+      { ...tasks[3], status: 'pending', summary: '', retries: 0 },
+      { ...tasks[4] },
+    ]);
+    expect(tasks).toEqual([
+      { ...t('001', 'done'), summary: 'root', retries: 0 },
+      { ...t('002', 'done', ['001']), summary: 'target', retries: 1 },
+      { ...t('003', 'pending', ['002']), summary: 'stale-pending', retries: 2 },
+      { ...t('004', 'active', ['003']), summary: 'stale-active', retries: 1 },
+      { ...t('005', 'pending', ['001']), summary: 'unrelated-pending', retries: 2 },
+    ]);
+  });
 });

@@ -30,64 +30,61 @@ node flow.js init
 
 ---
 
-## 2) 根因（源码层定位）
+## 2) 当前实现里的真实边界（源码层定位）
 
-本次排查确认根因集中在三个点，分别对应 **注入**、**提交策略**、**清理策略**：
+当前版本的关键点不再是“全量提交”或“自动 stash”，而是三套**显式边界**：dirty baseline、checkpoint ownership、setup-owned cleanup。
 
-### 根因 A：`ensureHooks` 注入 `.claude/settings.json`
+### 边界 A：`init()` 先记录 dirty baseline，再做 setup 注入
 
-- **位置**：`FlowPilot/src/infrastructure/fs-repository.ts` 的 `ensureHooks()`
-- **行为**：向目标项目的 `.claude/settings.json` 注入 hooks（例如拦截 `TaskCreate/TaskUpdate/TaskList`）  
-  结果就是 `.claude/settings.json` 被写入/修改，从而“污染”目标项目仓库。
+- **位置**：`src/application/workflow-service.ts` 的 `init()` 与 `src/infrastructure/runtime-state.ts` 的 `saveDirtyBaseline()`
+- **行为**：工作流启动时会先记录当前已有脏文件，再执行 `ensureClaudeMd()`、`ensureHooks()`、`ensureLocalStateIgnored()`。
+- **意义**：后续 `resume` / `finish` 可以区分：哪些脏文件是启动前就存在的，哪些是本轮 workflow 新产生的。
 
-> 补充：在某些项目里，即使 FlowPilot 本身不主动创建 `.claude/`，Claude Code 或用户环境也可能先创建该文件；而 FlowPilot 会继续对其进行注入，最终仍表现为“`.claude` 出现/变化”。
+### 边界 B：checkpoint 只记录 `--files` ownership，不会偷偷扩大提交范围
 
-### 根因 B：`commitIn` 默认 `git add -A`（提交范围过大）
+- **位置**：`src/application/workflow-service.ts` 的 `checkpoint()` 与 `src/infrastructure/runtime-state.ts` 的 `recordOwnedFiles()`
+- **行为**：checkpoint 会把 `--files` 持久化为 owned-file intent；若任务没有提供 `--files` 或这些文件没有可提交变更，输出会明确说明“未自动提交”。
+- **意义**：最终提交只会信任 checkpoint 显式声明过归属的业务文件，而不是把整个工作区都算进来。
 
-- **位置**：`FlowPilot/src/infrastructure/git.ts` 的 `commitIn()`
-- **行为**：在本次排查对应的实现中，`commitIn()` 以 `git add -A`（或等价的全量 stage）作为默认策略，把工作区里**所有变化**（包括 `.claude/`、临时文件、误改动、删除操作等）一起纳入暂存区。
-- **后果**：FlowPilot 的自动提交不再是“只提交本任务产物”，而是“把当时工作区的一切都提交了”，导致误提交与历史污染。
+### 边界 C：`finish()` 先 cleanup，再做 ownership 校验，边界不安全就拒绝最终提交
 
-### 根因 C：`gitCleanup` 自动 `git stash push`（stash 造成恢复/复活）
-
-- **位置**：`FlowPilot/src/infrastructure/git.ts` 的 `gitCleanup()`
-- **行为**：在本次排查对应的实现中，`gitCleanup()` 会自动执行 `git stash push`（并在后续阶段 `stash pop/apply`），把当下工作区的改动（包含删除操作）打包进 stash 并再恢复。
-- **后果**：用户直观感受就是“文件删除后又复活”，并且工作区状态被 FlowPilot 越权改写。
+- **位置**：`src/application/workflow-service.ts` 的 `resolveFinishCommitFiles()`
+- **行为**：`finish()` 会先执行精确 cleanup，然后检查：
+  - dirty baseline 是否存在
+  - 当前新增脏文件是否都被 checkpoint `--files` 解释
+  - `CLAUDE.md`、`.claude/settings.json`、`.gitignore` 在 cleanup 后是否仍有用户残留改动
+- **意义**：verify 通过也不代表会最终提交；只要边界仍不安全，finish 就会 fail closed，明确列出原因和文件。
 
 ---
 
 ## 3) 风险 / 影响
 
-- **污染 Git 历史**：`.claude/settings.json` 等与业务无关的文件被提交，仓库历史混入环境/工具配置。
-- **误提交风险**：全量 `git add -A` 会把不属于当前任务的改动一起提交（包括本地调试文件、误删误改、私有配置）。
-- **stash 恢复导致“复活”**：自动 stash 在恢复时把删除操作带回来，造成文件“死灰复燃”，并干扰你对工作区的判断。
-- **协作成本上升**：团队成员拉取代码后看到 `.claude/` 或异常提交，会引发额外沟通与回滚成本。
+- **边界解释错误**：如果不理解 dirty baseline，容易把“启动前就脏”的文件误认为是 FlowPilot 新写出来的。
+- **遗漏 checkpoint ownership**：业务文件没有出现在任何任务的 `--files` 中时，finish 会拒绝最终提交，工作流停在 `finishing`。
+- **setup-owned 文件残留用户改动**：`CLAUDE.md`、`.claude/settings.json`、`.gitignore` 在 cleanup 后仍然脏，会被视为风险边界，阻止最终提交。
+- **协作成本上升**：团队成员若不知道 finish 的 fail-closed 语义，容易把“拒绝最终提交”误判成 verify 失败，增加排查时间。
 
 ---
 
-## 4) 立刻可做的规避措施（强烈建议照做）
+## 4) 立刻可做的规避措施（基于当前实现）
 
 下面是“无需改 FlowPilot 源码、立即见效”的做法，按优先级排列。
 
-### 4.1 先把 `.claude/` 加入目标项目的 `.gitignore`
+> 说明：当前版本已经不再依赖 `git add -A` 或自动 stash 整个工作区。下面的建议重点是帮助你理解 dirty baseline、ownership boundary、以及 finish 拒绝最终提交时该怎么处理。
 
-在你运行 FlowPilot 的目标项目里，追加：
+### 4.1 先理解 ownership-based cleanup，不要把三类文件一概而论
 
-```gitignore
-# Claude Code / FlowPilot 注入产物（建议永远忽略）
-.claude/
-```
+FlowPilot 对 `CLAUDE.md`、`.claude/settings.json`、`.gitignore` 采用“谁创建/注入，谁负责 cleanup”的对称策略：
 
-如果 `.claude/` 已经被提交/被 git 跟踪，需要把它从索引移除（不会删本地文件）：
+- **`CLAUDE.md`**：如果是 FlowPilot 在 setup/init 阶段新建，且文件内容仍只包含 FlowPilot scaffold / protocol block，finish 会自动删除；如果文件原本就存在，则只移除 FlowPilot 注入块，保留用户原文
+- **`.claude/settings.json`**：如果是 FlowPilot 新建且 cleanup 后没有用户残留，会自动删除；如果原本存在，则回退到 baseline 快照，只移除 FlowPilot 注入的 hooks
+- **`.gitignore`**：如果是 FlowPilot 仅为本地状态忽略规则而创建，且 cleanup 后仍只有这些 FlowPilot 注入规则，会自动删除；如果原本存在，则只移除这些 FlowPilot 注入规则
 
-```bash
-git rm -r --cached .claude
-git commit -m "chore: ignore .claude directory"
-```
+真正需要你处理的，是 cleanup 之后这些文件里**仍然存在的用户残留改动**。这种情况下 finish 会拒绝最终提交，并把文件列出来。
 
-### 4.2 强制要求 checkpoint 使用 `--files`（只提交明确文件）
+### 4.2 强制要求 checkpoint 使用 `--files`（只声明明确归属）
 
-如果你的工作流/协议里允许子 Agent 自动提交，请**强制每次 checkpoint 都显式给出文件列表**，把提交范围收敛到“任务产物”。
+如果你的工作流/协议里允许子 Agent 自动提交，请**强制每次 checkpoint 都显式给出文件列表**，把 ownership boundary 收敛到“任务产物”。
 
 示例：
 
@@ -95,18 +92,14 @@ git commit -m "chore: ignore .claude directory"
 echo "完成xxx [REMEMBER] ..." | node flow.js checkpoint 001 --files src/a.ts src/b.ts
 ```
 
-如果你发现子 Agent 的 checkpoint 经常漏 `--files`，短期的策略是：
+当前实现里，如果没有 `--files`，任务 checkpoint 最多只会得到“未自动提交”的真实提示，不会偷偷扩大提交范围；但到了 `finish`，工作区里任何**未被 checkpoint 归属的新脏文件**，都会触发“拒绝最终提交”。
 
-- **宁可不让它自动提交**，也不要让它“全量提交”。（避免把 `.claude/`、误删文件等一起提交）
-- 在提交前人工检查暂存区：
+因此，最佳实践不是“让它猜”，而是：
+- 每个任务都明确写出 `--files`
+- 让 `CLAUDE.md` / `.claude/settings.json` / `.gitignore` 只由 setup/init ownership 管理，不要把它们混进普通业务任务的 `--files`
+- 在 finish 拒绝时，先看它列出的未归属文件，再决定补 checkpoint、手动清理，还是保留到下一轮工作流
 
-```bash
-git status
-git diff
-git diff --cached
-```
-
-### 4.3 运行 FlowPilot 前，保持工作区干净（避免 stash/恢复放大问题）
+### 4.3 运行 FlowPilot 前，尽量让工作区可解释（dirty baseline 越清晰越好）
 
 在目标项目中运行 FlowPilot 之前，先确认：
 
@@ -114,35 +107,60 @@ git diff --cached
 git status --porcelain
 ```
 
-若有输出，建议先手动处理（提交/丢弃/自己 stash），不要让工具替你 stash。
+若有输出，并不意味着不能运行；当前实现会把这些文件记录为 **dirty baseline**。但你需要知道这会带来两个结果：
+- `resume` 会把这些文件报告为“启动前已有的脏文件仍然保留”
+- `finish` 只允许它们作为 baseline 存在，不会把它们自动并入最终提交
 
-### 4.4 如果你已经遇到“删除文件复活”，先排查并清理 stash
+所以最稳妥的做法仍然是：
+- 能先处理就先处理（提交 / 丢弃 / 你自己 stash）
+- 如果必须带着脏工作区启动，也要知道这些文件之后不会自动变成本轮 workflow 的 owned files
 
-先查看 stash：
+### 4.4 如果 `finish` 因未归属脏文件而拒绝，怎么排查
 
-```bash
-git stash list --date=local
+当前更常见的问题，不是“stash 复活”，而是 `finish` 输出类似下面的拒绝信息：
+
+```text
+拒绝最终提交：检测到未归属给 workflow checkpoint 的脏文件。
+- src/unowned.ts
 ```
 
-如果确认 stash 是自动产生且不再需要，可以逐条删除：
+处理顺序建议如下：
 
-```bash
-git stash drop stash@{0}
+1. **先看文件属于哪一类**
+   - 业务文件：通常说明某个任务漏写了 checkpoint `--files`
+   - `CLAUDE.md` / `.claude/settings.json` / `.gitignore`：通常说明 cleanup 后还有用户残留改动
+2. **再决定归属方式**
+   - 属于本轮任务产物：在正确的任务 checkpoint 中补上 `--files`
+   - 不属于本轮任务：手动还原、另开任务处理，或保留到下一轮 workflow
+3. **重新执行 `node flow.js finish`**
+   - 只要边界恢复可证明安全，finish 就会继续
+
+如果输出是：
+
+```text
+拒绝最终提交：未找到 dirty baseline，无法证明工作流边界安全。
 ```
 
-或（高风险）全部清空：
-
-```bash
-git stash clear
-```
-
-> 注意：`git stash clear` 不可恢复。清理前建议先 `git stash show -p stash@{n}` 看一下内容。
+说明旧工作流缺失 `.workflow/dirty-baseline.json`。这种情况下应优先人工核对 `git status`，不要让 FlowPilot 猜哪些文件属于本轮工作流。
 
 ---
 
-## 5) 建议的代码修复方向（需要改哪些模块）
+## 5) 当前实现的推荐操作习惯
 
-以下是“从根上解决”的修复方向，适用于 FlowPilot 本体改造（而不是每个目标项目自己擦屁股）。
+在当前版本里，更推荐把注意力放在下面三条操作习惯上：
+
+1. **checkpoint 永远带 `--files`**
+   - 这决定了 finish 能否证明某个业务文件属于本轮 workflow
+2. **把 setup-owned 文件和业务文件分开理解**
+   - `CLAUDE.md`、`.claude/settings.json`、`.gitignore` 由 setup/init ownership 管理
+   - 普通业务文件由各任务 checkpoint ownership 管理
+3. **读懂 finish 的验证语义**
+   - `验证通过 ... 请派子Agent执行 code-review ...` = verify 已通过，但还没进入允许最终提交的 `finishing` 状态
+   - `验证结果: 未发现可执行的验证命令` = 仓库没有验证命令，不是失败
+   - `- 跳过: ...（未找到测试文件）` = 命令执行成功，但没有实际测试内容
+   - `拒绝最终提交: ...` = verify 已通过，但 ownership boundary 仍不安全
+
+如果你的目标是继续改 FlowPilot 本体，下面这些模块仍然是关键入口。
 
 ### 5.1 `FlowPilot/src/infrastructure/git.ts`
 
@@ -171,16 +189,19 @@ git stash clear
 ## 快速自查清单（建议复制执行）
 
 ```bash
-# 1) 目标项目忽略 .claude
-printf "\n.claude/\n" >> .gitignore
-
-# 2) 如果已被跟踪，移出索引
-git rm -r --cached .claude 2>/dev/null || true
-
-# 3) 运行前确认工作区干净
+# 1) 看当前工作区是否已有 baseline 脏文件
 git status --porcelain
 
-# 4) 如遇“复活”，检查 stash
-git stash list --date=local
+# 2) 看 FlowPilot 最终为什么拒绝（若已进入 finishing）
+node flow.js finish
+
+# 3) 若怀疑某个任务漏报 ownership，回看它的 checkpoint files
+cat .workflow/owned-files.json
+
+# 4) 若怀疑 setup-owned cleanup 后还有 residue，检查这三个文件
+git diff -- CLAUDE.md .claude/settings.json .gitignore
+
+# 5) 当前本地状态 ignore policy（FlowPilot 注入规则）
+git diff -- .gitignore
 ```
 

@@ -189,9 +189,6 @@ export function reopenRollbackBranch(tasks: readonly TaskEntry[], targetId: stri
 
   return tasks.map(task => {
     if (!affected.has(task.id)) return { ...task };
-    if (task.status !== 'done' && task.status !== 'skipped' && task.status !== 'failed') {
-      return { ...task };
-    }
     return { ...task, status: 'pending' as const, summary: '', retries: 0 };
   });
 }
