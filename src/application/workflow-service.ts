@@ -6,7 +6,7 @@
 import type { ProgressData, TaskEntry, WorkflowStats } from '../domain/types';
 import type { WorkflowDefinition } from '../domain/workflow';
 import type { CommitResult, WorkflowRepository } from '../domain/repository';
-import { makeTaskId, cascadeSkip, findNextTask, findParallelTasks, completeTask, failTask, resumeProgress, isAllDone } from '../domain/task-store';
+import { makeTaskId, cascadeSkip, findNextTask, findParallelTasks, completeTask, failTask, resumeProgress, isAllDone, reopenRollbackBranch } from '../domain/task-store';
 import { runLifecycleHook } from '../infrastructure/hooks';
 import { log, setWorkflowName } from '../infrastructure/logger';
 import { collectStats, analyzeHistory, reflect, experiment, review } from '../infrastructure/history';
@@ -483,10 +483,11 @@ export class WorkflowService {
     if (!result.passed) {
       return `验证失败: ${result.error}\n请修复后重新执行 node flow.js finish`;
     }
+    const verifySummary = this.formatVerifySummary(result);
 
     // 2. 验证通过，检查review是否已完成
     if (data.status !== 'finishing') {
-      return '验证通过，请派子Agent执行 code-review，完成后执行 node flow.js review，再执行 node flow.js finish';
+      return `${verifySummary}\n请派子Agent执行 code-review，完成后执行 node flow.js review，再执行 node flow.js finish`;
     }
 
     // 3. verify + review 都通过 → 最终提交
@@ -536,8 +537,7 @@ export class WorkflowService {
       await this.repo.clearAll();
     }
 
-    const scripts = result.scripts.length ? result.scripts.join(', ') : '无验证脚本';
-    return `验证通过: ${scripts}\n${stats}\n${evolutionSummary}${this.formatCommitMessage(commitResult, 'finish')}\n工作流回到待命状态\n等待下一个需求...`;
+    return `${verifySummary}\n${stats}\n${evolutionSummary}${this.formatCommitMessage(commitResult, 'finish')}\n工作流回到待命状态\n等待下一个需求...`;
   }
 
   /** 计算 config 变更的键列表（浅比较，键名排序） */
@@ -596,15 +596,12 @@ export class WorkflowService {
       const err = this.repo.rollback(id);
       if (err) return `回滚失败: ${err}`;
 
-      // 将该任务及其后续任务重置为 pending
-      const idx = parseInt(id, 10);
-      const newTasks = data.tasks.map(t =>
-        parseInt(t.id, 10) >= idx && t.status === 'done'
-          ? { ...t, status: 'pending' as const, summary: '' }
-          : t
-      );
+      // 将回滚目标及其传递下游终态任务重置为 pending
+      const newTasks = reopenRollbackBranch(data.tasks, id);
       await this.repo.saveProgress({ ...data, current: null, tasks: newTasks });
-      const resetCount = newTasks.filter((t, i) => t.status === 'pending' && data.tasks[i].status === 'done').length;
+      const resetCount = newTasks.filter((taskEntry, index) =>
+        taskEntry.status === 'pending' && data.tasks[index].status !== 'pending'
+      ).length;
       return `已回滚到任务 ${id} 之前的状态，${resetCount} 个任务重置为 pending`;
     } finally {
       await this.repo.unlock();

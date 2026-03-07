@@ -5,6 +5,7 @@
 var import_promises = require("fs/promises");
 var import_path = require("path");
 var import_fs = require("fs");
+var import_os2 = require("os");
 
 // src/infrastructure/git.ts
 var import_node_child_process = require("child_process");
@@ -406,6 +407,85 @@ echo '\u6458\u8981 [REMEMBER] \u5173\u952E\u53D1\u73B0 [DECISION] \u6280\u672F\u
 
 <!-- flowpilot:end -->`;
 
+// src/infrastructure/runtime-state.ts
+var import_os = require("os");
+var DEFAULT_INVALID_LOCK_STALE_AFTER_MS = 3e4;
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isValidCreatedAt(value) {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
+}
+function createRuntimeLockMetadata() {
+  return {
+    pid: process.pid,
+    hostname: (0, import_os.hostname)(),
+    createdAt: (/* @__PURE__ */ new Date()).toISOString()
+  };
+}
+function serializeRuntimeLock(metadata) {
+  return JSON.stringify(metadata);
+}
+function parseRuntimeLock(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    if (!isRecord(parsed)) return { valid: false, reason: "invalid-shape" };
+    const pid = parsed.pid;
+    const hostname2 = parsed.hostname;
+    const createdAt = parsed.createdAt;
+    if (!Number.isInteger(pid) || pid <= 0 || typeof hostname2 !== "string" || hostname2.length === 0 || !isValidCreatedAt(createdAt)) {
+      return { valid: false, reason: "invalid-shape" };
+    }
+    return {
+      valid: true,
+      metadata: { pid, hostname: hostname2, createdAt }
+    };
+  } catch {
+    return { valid: false, reason: "invalid-json" };
+  }
+}
+function getRuntimeLockAgeMs(metadata, nowMs = Date.now()) {
+  return Math.max(0, nowMs - Date.parse(metadata.createdAt));
+}
+function isRuntimeLockOwnedByProcess(parsed, pid = process.pid, currentHostname = (0, import_os.hostname)()) {
+  return parsed.valid && parsed.metadata.pid === pid && parsed.metadata.hostname === currentHostname;
+}
+function isRuntimeLockStale(input) {
+  if (!input.parsed.valid) {
+    return {
+      stale: input.fileAgeMs >= input.staleAfterMs,
+      reason: "invalid-lock-payload",
+      ageMs: input.fileAgeMs
+    };
+  }
+  const ageMs = getRuntimeLockAgeMs(input.parsed.metadata, input.nowMs ?? Date.now());
+  if (input.parsed.metadata.hostname !== input.currentHostname) {
+    return {
+      stale: false,
+      reason: "foreign-host-lock",
+      owner: input.parsed.metadata,
+      ageMs
+    };
+  }
+  if (input.isProcessAlive(input.parsed.metadata.pid)) {
+    return {
+      stale: false,
+      reason: "live-owner",
+      owner: input.parsed.metadata,
+      ageMs
+    };
+  }
+  return {
+    stale: true,
+    reason: "dead-owner",
+    owner: input.parsed.metadata,
+    ageMs
+  };
+}
+function defaultInvalidLockStaleAfterMs() {
+  return DEFAULT_INVALID_LOCK_STALE_AFTER_MS;
+}
+
 // src/infrastructure/fs-repository.ts
 var PERSISTENT_DIR = ".flowpilot";
 var LEGACY_RUNTIME_DIR = ".workflow";
@@ -490,35 +570,79 @@ var FsWorkflowRepository = class {
   async ensure(dir) {
     await (0, import_promises.mkdir)(dir, { recursive: true });
   }
+  isProcessAlive(pid) {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      if (error?.code === "ESRCH") return false;
+      return true;
+    }
+  }
+  async reclaimStaleLock(lockPath) {
+    try {
+      const [raw, fileStat] = await Promise.all([
+        (0, import_promises.readFile)(lockPath, "utf-8"),
+        (0, import_promises.stat)(lockPath)
+      ]);
+      const parsed = parseRuntimeLock(raw);
+      const decision = isRuntimeLockStale({
+        parsed,
+        fileAgeMs: Date.now() - fileStat.mtimeMs,
+        staleAfterMs: defaultInvalidLockStaleAfterMs(),
+        isProcessAlive: (pid) => this.isProcessAlive(pid),
+        currentHostname: (0, import_os2.hostname)()
+      });
+      if (!decision.stale) return false;
+      await (0, import_promises.unlink)(lockPath);
+      return true;
+    } catch (error) {
+      if (error?.code === "ENOENT") return true;
+      return false;
+    }
+  }
+  async describeLockFailure(lockPath) {
+    try {
+      const raw = await (0, import_promises.readFile)(lockPath, "utf-8");
+      const parsed = parseRuntimeLock(raw);
+      if (!parsed.valid) return "\u65E0\u6CD5\u83B7\u53D6\u6587\u4EF6\u9501\uFF1A\u73B0\u6709\u9501\u5143\u6570\u636E\u65E0\u6548\u4E14\u672A\u8FBE\u5230\u5B89\u5168\u56DE\u6536\u6761\u4EF6";
+      const ageMs = Math.max(0, Date.now() - Date.parse(parsed.metadata.createdAt));
+      return `\u65E0\u6CD5\u83B7\u53D6\u6587\u4EF6\u9501\uFF1A\u5F53\u524D\u7531 pid ${parsed.metadata.pid} \u5728 ${parsed.metadata.hostname} \u4E0A\u6301\u6709\uFF0C\u5DF2\u5B58\u5728 ${ageMs}ms`;
+    } catch {
+      return "\u65E0\u6CD5\u83B7\u53D6\u6587\u4EF6\u9501";
+    }
+  }
   /** 文件锁：用 O_EXCL 创建 lockfile，防止并发读写 */
   async lock(maxWait = 5e3) {
     await this.ensure(this.root);
     const lockPath = (0, import_path.join)(this.root, ".lock");
     const start = Date.now();
-    while (Date.now() - start < maxWait) {
+    const tryAcquire = async () => {
       try {
         const fd = (0, import_fs.openSync)(lockPath, "wx");
+        const payload = serializeRuntimeLock(createRuntimeLockMetadata());
+        await (0, import_promises.writeFile)(lockPath, payload, "utf-8");
         (0, import_fs.closeSync)(fd);
-        return;
+        return true;
       } catch {
-        await new Promise((r) => setTimeout(r, 50));
+        return false;
       }
+    };
+    while (Date.now() - start < maxWait) {
+      if (await tryAcquire()) return;
+      await new Promise((r) => setTimeout(r, 50));
     }
-    try {
-      await (0, import_promises.unlink)(lockPath);
-    } catch {
-    }
-    try {
-      const fd = (0, import_fs.openSync)(lockPath, "wx");
-      (0, import_fs.closeSync)(fd);
-      return;
-    } catch {
-      throw new Error("\u65E0\u6CD5\u83B7\u53D6\u6587\u4EF6\u9501");
-    }
+    const reclaimed = await this.reclaimStaleLock(lockPath);
+    if (reclaimed && await tryAcquire()) return;
+    throw new Error(await this.describeLockFailure(lockPath));
   }
   async unlock() {
+    const lockPath = (0, import_path.join)(this.root, ".lock");
     try {
-      await (0, import_promises.unlink)((0, import_path.join)(this.root, ".lock"));
+      const raw = await (0, import_promises.readFile)(lockPath, "utf-8");
+      const parsed = parseRuntimeLock(raw);
+      if (!isRuntimeLockOwnedByProcess(parsed)) return;
+      await (0, import_promises.unlink)(lockPath);
     } catch {
     }
   }
@@ -887,6 +1011,34 @@ function findParallelTasks(tasks) {
 }
 function isAllDone(tasks) {
   return tasks.every((t) => t.status === "done" || t.status === "skipped" || t.status === "failed");
+}
+function reopenRollbackBranch(tasks, targetId) {
+  const idx = buildIndex(tasks);
+  if (!idx.has(targetId)) throw new Error(`\u4EFB\u52A1 ${targetId} \u4E0D\u5B58\u5728`);
+  const dependents = /* @__PURE__ */ new Map();
+  for (const task of tasks) {
+    for (const dep of task.deps) {
+      const downstream = dependents.get(dep) ?? [];
+      dependents.set(dep, [...downstream, task.id]);
+    }
+  }
+  const affected = /* @__PURE__ */ new Set();
+  const stack = [targetId];
+  while (stack.length) {
+    const current = stack.pop();
+    if (affected.has(current)) continue;
+    affected.add(current);
+    for (const downstreamId of dependents.get(current) ?? []) {
+      stack.push(downstreamId);
+    }
+  }
+  return tasks.map((task) => {
+    if (!affected.has(task.id)) return { ...task };
+    if (task.status !== "done" && task.status !== "skipped" && task.status !== "failed") {
+      return { ...task };
+    }
+    return { ...task, status: "pending", summary: "", retries: 0 };
+  });
 }
 
 // src/infrastructure/markdown-parser.ts
@@ -3327,12 +3479,11 @@ ${evolutionSummary}${this.formatCommitMessage(commitResult, "finish")}
       if (task.status !== "done") throw new Error(`\u4EFB\u52A1 ${id} \u72B6\u6001\u4E3A ${task.status}\uFF0C\u53EA\u80FD\u56DE\u6EDA\u5DF2\u5B8C\u6210\u7684\u4EFB\u52A1`);
       const err = this.repo.rollback(id);
       if (err) return `\u56DE\u6EDA\u5931\u8D25: ${err}`;
-      const idx = parseInt(id, 10);
-      const newTasks = data.tasks.map(
-        (t) => parseInt(t.id, 10) >= idx && t.status === "done" ? { ...t, status: "pending", summary: "" } : t
-      );
+      const newTasks = reopenRollbackBranch(data.tasks, id);
       await this.repo.saveProgress({ ...data, current: null, tasks: newTasks });
-      const resetCount = newTasks.filter((t, i) => t.status === "pending" && data.tasks[i].status === "done").length;
+      const resetCount = newTasks.filter(
+        (taskEntry, index) => taskEntry.status === "pending" && data.tasks[index].status !== "pending"
+      ).length;
       return `\u5DF2\u56DE\u6EDA\u5230\u4EFB\u52A1 ${id} \u4E4B\u524D\u7684\u72B6\u6001\uFF0C${resetCount} \u4E2A\u4EFB\u52A1\u91CD\u7F6E\u4E3A pending`;
     } finally {
       await this.repo.unlock();
