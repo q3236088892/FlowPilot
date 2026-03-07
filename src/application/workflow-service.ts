@@ -103,6 +103,7 @@ export class WorkflowService {
     await this.repo.saveSummary(`# ${def.name}\n\n${def.description}\n`);
     await this.repo.ensureClaudeMd();
     await this.repo.ensureHooks();
+    await this.repo.ensureClaudeWorktreesIgnored();
 
     // 历史经验分析：读取历史统计，输出建议，自动调整参数
     await this.applyHistoryInsights();
@@ -433,6 +434,7 @@ export class WorkflowService {
     const existing = await this.repo.loadProgress();
     const wrote = await this.repo.ensureClaudeMd();
     await this.repo.ensureHooks();
+    await this.repo.ensureClaudeWorktreesIgnored();
     const lines: string[] = [];
 
     if (existing && (existing.status === 'running' || existing.status === 'finishing')) {
@@ -501,23 +503,30 @@ export class WorkflowService {
     await this.repo.saveHistory(wfStats);
 
     // 进化循环：Reflect → Experiment
+    const configBeforeEvolution = await this.repo.loadConfig();
     const reflectReport = await reflect(wfStats, this.repo.projectRoot());
-    if (reflectReport.experiments.length) {
+    const experimentRan = reflectReport.experiments.length > 0;
+    if (experimentRan) {
       await experiment(reflectReport, this.repo.projectRoot());
     }
 
     // 保存进化快照（config 变更前后对比）
-    const configNow = await this.repo.loadConfig();
-    const evolutions = await this.repo.loadEvolutions();
-    const lastEvo = evolutions[evolutions.length - 1];
-    const configBefore = lastEvo?.configAfter ?? {};
-    if (JSON.stringify(configBefore) !== JSON.stringify(configNow)) {
+    const configAfterEvolution = await this.repo.loadConfig();
+    const changedConfigKeys = this.diffConfigKeys(configBeforeEvolution, configAfterEvolution);
+    if (changedConfigKeys.length > 0) {
       await this.repo.saveEvolution({
         timestamp: new Date().toISOString(),
         workflowName: data.name,
-        configBefore, configAfter: configNow, suggestions: [],
+        configBefore: configBeforeEvolution,
+        configAfter: configAfterEvolution,
+        suggestions: [],
       });
     }
+    const evolutionSummary = this.formatEvolutionSummary({
+      reflectRan: true,
+      experimentRan,
+      changedConfigKeys,
+    });
 
     await this.repo.cleanupInjections();
     this.repo.cleanTags();
@@ -528,7 +537,32 @@ export class WorkflowService {
     }
 
     const scripts = result.scripts.length ? result.scripts.join(', ') : '无验证脚本';
-    return `验证通过: ${scripts}\n${stats}${this.formatCommitMessage(commitResult, 'finish')}\n工作流回到待命状态\n等待下一个需求...`;
+    return `验证通过: ${scripts}\n${stats}\n${evolutionSummary}${this.formatCommitMessage(commitResult, 'finish')}\n工作流回到待命状态\n等待下一个需求...`;
+  }
+
+  /** 计算 config 变更的键列表（浅比较，键名排序） */
+  private diffConfigKeys(
+    before: Record<string, unknown>,
+    after: Record<string, unknown>,
+  ): string[] {
+    const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+    return [...keys].filter(key => JSON.stringify(before[key]) !== JSON.stringify(after[key])).sort();
+  }
+
+  /** 格式化 finish 阶段的进化摘要 */
+  private formatEvolutionSummary(summary: {
+    reflectRan: boolean;
+    experimentRan: boolean;
+    changedConfigKeys: string[];
+  }): string {
+    const changedKeysText = summary.changedConfigKeys.length ? summary.changedConfigKeys.join(', ') : '无';
+    return [
+      '进化摘要:',
+      `- reflect: ${summary.reflectRan ? '已执行' : '未执行'}`,
+      `- experiment: ${summary.experimentRan ? '已执行' : '未执行'}`,
+      `- config变更: ${summary.changedConfigKeys.length > 0 ? '是' : '否'}`,
+      `- 变更键: ${changedKeysText}`,
+    ].join('\n');
   }
 
   /** 将 git 提交结果映射为面向用户的真实提示语 */

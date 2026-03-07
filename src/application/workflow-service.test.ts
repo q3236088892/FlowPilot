@@ -6,6 +6,7 @@ import { WorkflowService } from './workflow-service';
 import { FsWorkflowRepository } from '../infrastructure/fs-repository';
 import { parseTasksMarkdown } from '../infrastructure/markdown-parser';
 import { loadMemory } from '../infrastructure/memory';
+import * as history from '../infrastructure/history';
 import { readFile } from 'fs/promises';
 import type { CommitResult } from '../domain/repository';
 
@@ -169,6 +170,27 @@ describe('WorkflowService 集成测试', () => {
     expect(data.status).toBe('running');
   });
 
+  it('仅在 init 和 setup 接入 .gitignore helper', async () => {
+    const repo = new FsWorkflowRepository(dir);
+    const helperSpy = vi.spyOn(repo, 'ensureClaudeWorktreesIgnored');
+    svc = new WorkflowService(repo, parseTasksMarkdown);
+
+    await svc.init(TASKS_MD);
+    expect(await readFile(join(dir, '.gitignore'), 'utf-8')).toBe('.claude/worktrees/\n');
+
+    await svc.setup();
+    expect(helperSpy).toHaveBeenCalledTimes(2);
+
+    helperSpy.mockClear();
+    await svc.next();
+    await svc.status();
+    await svc.resume();
+    await svc.nextBatch();
+
+    expect(helperSpy).not.toHaveBeenCalled();
+    expect(await readFile(join(dir, '.gitignore'), 'utf-8')).toBe('.claude/worktrees/\n');
+  });
+
   it('checkpoint提取[REMEMBER]标记写入永久记忆', async () => {
     await svc.init(TASKS_MD);
     await svc.next();
@@ -290,6 +312,50 @@ describe('WorkflowService 集成测试', () => {
     expect(msg).toContain('[git提交失败] git hooks failed');
     expect(msg).toContain('请根据错误修复后手动检查并提交需要的文件');
     expect(await svc.status()).not.toBeNull();
+  });
+
+  it('finish输出进化摘要可观测性', async () => {
+    const repo = new FsWorkflowRepository(dir);
+    mockChangedFiles(repo, []);
+    mockCommitResult(repo, { status: 'skipped', reason: 'no-files' });
+    vi.spyOn(repo, 'verify').mockReturnValue({ passed: true, scripts: ['npm test'] });
+    svc = new WorkflowService(repo, parseTasksMarkdown);
+    await completeWorkflow(svc);
+    await svc.review();
+
+    const msg = await svc.finish();
+
+    expect(msg).toContain('进化摘要:');
+    expect(msg).toContain('reflect: 已执行');
+    expect(msg).toContain('experiment: 已执行');
+    expect(msg).toContain('config变更: 是');
+    expect(msg).toContain('变更键: parallelLimit');
+  });
+
+  it('finish在无实验时也输出未执行和无配置变更', async () => {
+    const repo = new FsWorkflowRepository(dir);
+    mockChangedFiles(repo, []);
+    mockCommitResult(repo, { status: 'skipped', reason: 'no-files' });
+    vi.spyOn(repo, 'verify').mockReturnValue({ passed: true, scripts: ['npm test'] });
+    const reflectSpy = vi.spyOn(history, 'reflect').mockResolvedValue({
+      timestamp: '2026-03-07T00:00:00.000Z',
+      findings: [],
+      experiments: [],
+    });
+    const experimentSpy = vi.spyOn(history, 'experiment');
+    svc = new WorkflowService(repo, parseTasksMarkdown);
+    await completeWorkflow(svc);
+    await svc.review();
+
+    const msg = await svc.finish();
+
+    expect(msg).toContain('进化摘要:');
+    expect(msg).toContain('reflect: 已执行');
+    expect(msg).toContain('experiment: 未执行');
+    expect(msg).toContain('config变更: 否');
+    expect(msg).toContain('变更键: 无');
+    expect(reflectSpy).toHaveBeenCalled();
+    expect(experimentSpy).not.toHaveBeenCalled();
   });
 
   it('rollbackEvolution恢复历史config', async () => {
