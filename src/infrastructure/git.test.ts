@@ -41,8 +41,26 @@ describe('git runtime path filtering', () => {
     ])).toEqual({ status: 'skipped', reason: 'runtime-only' });
   });
 
-  it('returns skipped/no-staged-changes when business files have no git diff', () => {
-    expect(autoCommit('001', 'test', 'summary', ['src/main.ts'])).toEqual({ status: 'skipped', reason: 'no-staged-changes' });
+  it('returns skipped/no-staged-changes for a real tracked file in a temp repo', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'flow-git-autocommit-'));
+    const trackedFile = 'tracked.txt';
+
+    try {
+      execFileSync('git', ['init'], { cwd: dir, stdio: 'pipe' });
+      execFileSync('git', ['config', 'user.name', 'FlowPilot Test'], { cwd: dir, stdio: 'pipe' });
+      execFileSync('git', ['config', 'user.email', 'flowpilot@example.com'], { cwd: dir, stdio: 'pipe' });
+
+      await writeFile(join(dir, trackedFile), 'base\n', 'utf-8');
+      execFileSync('git', ['add', '--', trackedFile], { cwd: dir, stdio: 'pipe' });
+      execFileSync('git', ['commit', '-m', 'init'], { cwd: dir, stdio: 'pipe' });
+
+      expect(autoCommit('001', 'test', 'summary', [trackedFile], dir)).toEqual({
+        status: 'skipped',
+        reason: 'no-staged-changes',
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('collects staged, unstaged and untracked business files', async () => {

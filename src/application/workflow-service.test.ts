@@ -567,7 +567,7 @@ describe('WorkflowService 集成测试', () => {
     expect(await svc.status()).toBeNull();
   });
 
-  it('finish在 ownership boundary 拒绝前不运行副作用', async () => {
+  it('finish在 ownership boundary 拒绝后不运行提交类副作用，但会先做精确 cleanup', async () => {
     const repo = new FsWorkflowRepository(dir);
     const changedFilesSpy = vi.spyOn(repo, 'listChangedFiles');
     changedFilesSpy.mockReturnValueOnce([]);
@@ -595,17 +595,17 @@ describe('WorkflowService 集成测试', () => {
     expect(reflectSpy).not.toHaveBeenCalled();
     expect(experimentSpy).not.toHaveBeenCalled();
     expect(saveEvolutionSpy).not.toHaveBeenCalled();
-    expect(cleanupInjectionsSpy).not.toHaveBeenCalled();
+    expect(cleanupInjectionsSpy).toHaveBeenCalledTimes(1);
     expect(commitSpy).not.toHaveBeenCalled();
     expect(clearAllSpy).not.toHaveBeenCalled();
     expect((await svc.status())?.status).toBe('finishing');
   });
 
-  it('finish在干净启动时允许 setup-owned 脏文件可解释但不提交，即使 checkpoint 声明了这些文件', async () => {
+  it('finish在 cleanup 移除 setup-owned 注入后仍只提交业务文件，即使 checkpoint 声明了这些文件', async () => {
     const repo = new FsWorkflowRepository(dir);
     const changedFilesSpy = vi.spyOn(repo, 'listChangedFiles');
     changedFilesSpy.mockReturnValueOnce([]);
-    changedFilesSpy.mockReturnValue(['CLAUDE.md', '.gitignore', 'src/main.ts']);
+    changedFilesSpy.mockReturnValueOnce(['src/main.ts']);
     const commitSpy = vi.spyOn(repo, 'commit').mockImplementation((taskId, title, summary, files) => {
       if (taskId !== 'finish') {
         return { status: 'skipped', reason: 'no-staged-changes' };
@@ -639,7 +639,7 @@ describe('WorkflowService 集成测试', () => {
     const repo = new FsWorkflowRepository(dir);
     const changedFilesSpy = vi.spyOn(repo, 'listChangedFiles');
     changedFilesSpy.mockReturnValueOnce([]);
-    changedFilesSpy.mockReturnValue(['CLAUDE.md', '.gitignore', 'src/main.ts']);
+    changedFilesSpy.mockReturnValueOnce(['src/main.ts']);
     const commitSpy = vi.spyOn(repo, 'commit').mockImplementation((taskId, title, summary, files) => {
       if (taskId !== 'finish') {
         return { status: 'skipped', reason: 'no-staged-changes' };
@@ -672,7 +672,7 @@ describe('WorkflowService 集成测试', () => {
     const repo = new FsWorkflowRepository(dir);
     const changedFilesSpy = vi.spyOn(repo, 'listChangedFiles');
     changedFilesSpy.mockReturnValueOnce(['README.md']);
-    changedFilesSpy.mockReturnValue(['README.md', '.gitignore', 'src/main.ts']);
+    changedFilesSpy.mockReturnValueOnce(['README.md', 'src/main.ts']);
     const commitSpy = vi.spyOn(repo, 'commit').mockImplementation((taskId, title, summary, files) => {
       if (taskId !== 'finish') {
         return { status: 'skipped', reason: 'no-staged-changes' };
@@ -703,7 +703,7 @@ describe('WorkflowService 集成测试', () => {
     const repo = new FsWorkflowRepository(dir);
     const changedFilesSpy = vi.spyOn(repo, 'listChangedFiles');
     changedFilesSpy.mockReturnValueOnce(['README.md']);
-    changedFilesSpy.mockReturnValue(['README.md', '.gitignore', 'src/main.ts', 'src/unowned.ts']);
+    changedFilesSpy.mockReturnValueOnce(['README.md', 'src/main.ts', 'src/unowned.ts']);
     const commitSpy = vi.spyOn(repo, 'commit');
     vi.spyOn(repo, 'verify').mockReturnValue({ passed: true, scripts: ['npm test'] });
     const clearAllSpy = vi.spyOn(repo, 'clearAll');
@@ -744,11 +744,145 @@ describe('WorkflowService 集成测试', () => {
     expect(await svc.status()).toBeNull();
   });
 
-  it('finish会对称清理由 setup 创建的 CLAUDE.md、settings.json 和 .gitignore', async () => {
+  it('finish在 cleanup 后若 CLAUDE.md 残留用户改动则拒绝最终提交', async () => {
     const repo = new FsWorkflowRepository(dir);
     const changedFilesSpy = vi.spyOn(repo, 'listChangedFiles');
     changedFilesSpy.mockReturnValueOnce([]);
-    changedFilesSpy.mockReturnValue(['CLAUDE.md', '.gitignore']);
+    changedFilesSpy.mockReturnValue(['CLAUDE.md']);
+    const commitSpy = vi.spyOn(repo, 'commit');
+    vi.spyOn(repo, 'verify').mockReturnValue({ passed: true, scripts: ['npm test'] });
+    svc = new WorkflowService(repo, parseTasksMarkdown);
+
+    await completeWorkflow(svc);
+    await writeFile(join(dir, 'CLAUDE.md'), `${await readFile(join(dir, 'CLAUDE.md'), 'utf-8')}User residue\n`, 'utf-8');
+    await svc.review();
+
+    const msg = await svc.finish();
+
+    expect(msg).toContain('拒绝最终提交');
+    expect(msg).toContain('CLAUDE.md');
+    expect(commitSpy).not.toHaveBeenCalledWith('finish', expect.any(String), expect.any(String), expect.anything());
+    expect((await svc.status())?.status).toBe('finishing');
+  });
+
+  it('finish在 cleanup 后若 .gitignore 残留用户改动则拒绝最终提交', async () => {
+    const repo = new FsWorkflowRepository(dir);
+    const changedFilesSpy = vi.spyOn(repo, 'listChangedFiles');
+    changedFilesSpy.mockReturnValueOnce([]);
+    changedFilesSpy.mockReturnValue(['.gitignore']);
+    const commitSpy = vi.spyOn(repo, 'commit');
+    vi.spyOn(repo, 'verify').mockReturnValue({ passed: true, scripts: ['npm test'] });
+    svc = new WorkflowService(repo, parseTasksMarkdown);
+
+    await completeWorkflow(svc);
+    await writeFile(join(dir, '.gitignore'), `${await readFile(join(dir, '.gitignore'), 'utf-8')}dist/\n`, 'utf-8');
+    await svc.review();
+
+    const msg = await svc.finish();
+
+    expect(msg).toContain('拒绝最终提交');
+    expect(msg).toContain('.gitignore');
+    expect(commitSpy).not.toHaveBeenCalledWith('finish', expect.any(String), expect.any(String), expect.anything());
+    expect((await svc.status())?.status).toBe('finishing');
+  });
+
+  it('finish不会因跟踪中的预先脏 settings.json 在 cleanup 后恢复原始内容而误拒绝', async () => {
+    await initGitRepo(dir);
+    await mkdir(join(dir, '.claude'), { recursive: true });
+    await writeFile(join(dir, '.claude', 'settings.json'), '{"model":"opus"}\n', 'utf-8');
+    runGit(['add', '.claude/settings.json'], dir);
+    runGit(['commit', '-m', 'track settings'], dir);
+
+    const preWorkflowDirtyContent = '{"model":"opus","theme":"dark","hooks":{"PreToolUse":[{"matcher":"OtherTool","hooks":[{"type":"prompt","prompt":"keep me"}]}]}}';
+    await writeFile(join(dir, '.claude', 'settings.json'), preWorkflowDirtyContent, 'utf-8');
+
+    const repo = new FsWorkflowRepository(dir);
+    vi.spyOn(repo, 'commit').mockReturnValue({ status: 'skipped', reason: 'no-files' });
+    vi.spyOn(repo, 'verify').mockReturnValue({ passed: true, scripts: ['npm test'] });
+    svc = new WorkflowService(repo, parseTasksMarkdown);
+
+    await completeWorkflow(svc);
+    await svc.review();
+
+    const msg = await svc.finish();
+
+    expect(msg).not.toContain('拒绝最终提交');
+    expect(msg).toContain('未提交最终commit：未提供 --files，未自动提交');
+    expect(await readFile(join(dir, '.claude', 'settings.json'), 'utf-8')).toBe(preWorkflowDirtyContent);
+    expect((await svc.status())).toBeNull();
+  });
+
+  it('finish在 ignored/untracked settings.json cleanup 后仍有 residue 时也会拒绝最终提交', async () => {
+    await initGitRepo(dir);
+    await writeFile(join(dir, '.gitignore'), 'node_modules\n.claude/settings.json\n', 'utf-8');
+    runGit(['add', '.gitignore'], dir);
+    runGit(['commit', '-m', 'ignore settings'], dir);
+
+    const repo = new FsWorkflowRepository(dir);
+    const commitSpy = vi.spyOn(repo, 'commit').mockReturnValue({ status: 'skipped', reason: 'no-files' });
+    vi.spyOn(repo, 'verify').mockReturnValue({ passed: true, scripts: ['npm test'] });
+    svc = new WorkflowService(repo, parseTasksMarkdown);
+
+    await completeWorkflow(svc);
+    const settingsPath = join(dir, '.claude', 'settings.json');
+    const settings = JSON.parse(await readFile(settingsPath, 'utf-8'));
+    await writeFile(settingsPath, JSON.stringify({
+      ...settings,
+      model: 'sonnet',
+    }, null, 2) + '\n', 'utf-8');
+    await svc.review();
+
+    const msg = await svc.finish();
+
+    expect(msg).toContain('拒绝最终提交');
+    expect(msg).toContain('.claude/settings.json');
+    expect(commitSpy).not.toHaveBeenCalledWith('finish', expect.any(String), expect.any(String), expect.anything());
+    expect((await svc.status())?.status).toBe('finishing');
+    expect(JSON.parse(await readFile(settingsPath, 'utf-8'))).toEqual({ model: 'sonnet' });
+  });
+
+  it('finish在存在 hook ownership 但缺少精确 settings baseline 时会 fail closed', async () => {
+    await initGitRepo(dir);
+    await writeFile(join(dir, '.gitignore'), 'node_modules\n.claude/settings.json\n', 'utf-8');
+    runGit(['add', '.gitignore'], dir);
+    runGit(['commit', '-m', 'ignore settings'], dir);
+
+    const repo = new FsWorkflowRepository(dir);
+    const commitSpy = vi.spyOn(repo, 'commit').mockReturnValue({ status: 'skipped', reason: 'no-files' });
+    vi.spyOn(repo, 'verify').mockReturnValue({ passed: true, scripts: ['npm test'] });
+    svc = new WorkflowService(repo, parseTasksMarkdown);
+
+    await completeWorkflow(svc);
+    const settingsPath = join(dir, '.claude', 'settings.json');
+    const settings = JSON.parse(await readFile(settingsPath, 'utf-8'));
+    await writeFile(settingsPath, JSON.stringify({
+      ...settings,
+      model: 'sonnet',
+    }, null, 2) + '\n', 'utf-8');
+
+    const injectionsPath = join(dir, '.workflow', 'injections.json');
+    const injections = JSON.parse(await readFile(injectionsPath, 'utf-8'));
+    const { settingsBaseline: _missingBaseline, ...hooksWithoutBaseline } = injections.hooks;
+    await writeFile(injectionsPath, JSON.stringify({
+      ...injections,
+      hooks: hooksWithoutBaseline,
+    }, null, 2) + '\n', 'utf-8');
+    await svc.review();
+
+    const msg = await svc.finish();
+
+    expect(msg).toContain('拒绝最终提交');
+    expect(msg).toContain('.claude/settings.json');
+    expect(commitSpy).not.toHaveBeenCalledWith('finish', expect.any(String), expect.any(String), expect.anything());
+    expect((await svc.status())?.status).toBe('finishing');
+    expect(JSON.parse(await readFile(settingsPath, 'utf-8'))).toEqual({ model: 'sonnet' });
+  });
+
+  it('finish会对称清理由 setup 创建且内容仍完整匹配的 CLAUDE.md、settings.json 和 .gitignore', async () => {
+    const repo = new FsWorkflowRepository(dir);
+    const changedFilesSpy = vi.spyOn(repo, 'listChangedFiles');
+    changedFilesSpy.mockReturnValueOnce([]);
+    changedFilesSpy.mockReturnValueOnce([]);
     mockCommitResult(repo, { status: 'skipped', reason: 'no-files' });
     vi.spyOn(repo, 'verify').mockReturnValue({ passed: true, scripts: ['npm test'] });
     svc = new WorkflowService(repo, parseTasksMarkdown);
