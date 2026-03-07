@@ -104,6 +104,45 @@ describe('git runtime path filtering', () => {
     }
   });
 
+  it('returns the submodule path when only the gitlink changes', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'flow-git-submodule-gitlink-'));
+    const rootDir = join(dir, 'root');
+    const submoduleSourceDir = join(dir, 'submodule-source');
+    const submodulePath = join(rootDir, 'vendor', 'lib');
+    const trackedFile = 'tracked.txt';
+
+    try {
+      await mkdir(rootDir, { recursive: true });
+      await mkdir(submoduleSourceDir, { recursive: true });
+
+      execFileSync('git', ['init'], { cwd: submoduleSourceDir, stdio: 'pipe' });
+      execFileSync('git', ['config', 'user.name', 'FlowPilot Test'], { cwd: submoduleSourceDir, stdio: 'pipe' });
+      execFileSync('git', ['config', 'user.email', 'flowpilot@example.com'], { cwd: submoduleSourceDir, stdio: 'pipe' });
+      await writeFile(join(submoduleSourceDir, trackedFile), 'base\n', 'utf-8');
+      execFileSync('git', ['add', '--', trackedFile], { cwd: submoduleSourceDir, stdio: 'pipe' });
+      execFileSync('git', ['commit', '-m', 'init submodule'], { cwd: submoduleSourceDir, stdio: 'pipe' });
+
+      execFileSync('git', ['init'], { cwd: rootDir, stdio: 'pipe' });
+      execFileSync('git', ['config', 'user.name', 'FlowPilot Test'], { cwd: rootDir, stdio: 'pipe' });
+      execFileSync('git', ['config', 'user.email', 'flowpilot@example.com'], { cwd: rootDir, stdio: 'pipe' });
+      execFileSync('git', ['-c', 'protocol.file.allow=always', 'submodule', 'add', submoduleSourceDir, 'vendor/lib'], { cwd: rootDir, stdio: 'pipe' });
+      execFileSync('git', ['add', '--', '.'], { cwd: rootDir, stdio: 'pipe' });
+      execFileSync('git', ['commit', '-m', 'init root'], { cwd: rootDir, stdio: 'pipe' });
+
+      execFileSync('git', ['config', 'user.name', 'FlowPilot Test'], { cwd: submodulePath, stdio: 'pipe' });
+      execFileSync('git', ['config', 'user.email', 'flowpilot@example.com'], { cwd: submodulePath, stdio: 'pipe' });
+      await writeFile(join(submodulePath, trackedFile), 'base\nadvanced\n', 'utf-8');
+      execFileSync('git', ['add', '--', trackedFile], { cwd: submodulePath, stdio: 'pipe' });
+      execFileSync('git', ['commit', '-m', 'advance submodule'], { cwd: submodulePath, stdio: 'pipe' });
+
+      const repo = new FsWorkflowRepository(rootDir);
+      expect(repo.listChangedFiles()).toEqual(['vendor/lib']);
+      expect(listChangedFiles(rootDir)).toEqual(['vendor/lib']);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('uses repository base for tag rollback and cleanTags when process cwd differs', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'flow-git-tag-cwd-'));
     const outsideDir = await mkdtemp(join(tmpdir(), 'flow-git-outside-'));

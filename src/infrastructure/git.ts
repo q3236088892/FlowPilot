@@ -144,7 +144,16 @@ export function listChangedFiles(cwd = process.cwd()): string[] {
   for (const group of groups) {
     for (const file of group) {
       if (submoduleSet.has(file)) {
-        for (const nestedFile of listDirtySubmoduleFiles(cwd, file)) {
+        const nestedFiles = listDirtySubmoduleFiles(cwd, file);
+        if (nestedFiles.length === 0) {
+          if (!seen.has(file)) {
+            seen.add(file);
+            result.push(file);
+          }
+          continue;
+        }
+
+        for (const nestedFile of nestedFiles) {
           if (seen.has(nestedFile)) continue;
           seen.add(nestedFile);
           result.push(nestedFile);

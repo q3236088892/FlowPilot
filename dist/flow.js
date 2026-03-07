@@ -116,7 +116,15 @@ function listChangedFiles(cwd = process.cwd()) {
   for (const group of groups) {
     for (const file of group) {
       if (submoduleSet.has(file)) {
-        for (const nestedFile of listDirtySubmoduleFiles(cwd, file)) {
+        const nestedFiles = listDirtySubmoduleFiles(cwd, file);
+        if (nestedFiles.length === 0) {
+          if (!seen.has(file)) {
+            seen.add(file);
+            result.push(file);
+          }
+          continue;
+        }
+        for (const nestedFile of nestedFiles) {
           if (seen.has(nestedFile)) continue;
           seen.add(nestedFile);
           result.push(nestedFile);
@@ -475,11 +483,14 @@ function isHookEntry(value) {
   }
   return value.hooks.every((hook) => isRecord(hook) && typeof hook.type === "string" && typeof hook.prompt === "string");
 }
+function isExactFileSnapshot(value) {
+  return isRecord(value) && typeof value.exists === "boolean" && (value.rawContent === void 0 || typeof value.rawContent === "string");
+}
 function isClaudeMdInjectionState(value) {
   return isRecord(value) && typeof value.created === "boolean" && typeof value.block === "string" && (value.scaffold === void 0 || typeof value.scaffold === "string");
 }
 function isHooksInjectionState(value) {
-  return isRecord(value) && typeof value.created === "boolean" && Array.isArray(value.preToolUse) && value.preToolUse.every(isHookEntry);
+  return isRecord(value) && typeof value.created === "boolean" && Array.isArray(value.preToolUse) && value.preToolUse.every(isHookEntry) && (value.settingsBaseline === void 0 || isExactFileSnapshot(value.settingsBaseline));
 }
 function isGitignoreInjectionState(value) {
   return isRecord(value) && typeof value.created === "boolean" && typeof value.rule === "string";
@@ -521,7 +532,13 @@ function normalizeSetupInjectionManifest(manifest) {
   if (manifest.hooks) {
     normalized.hooks = {
       created: manifest.hooks.created,
-      preToolUse: dedupeHookEntries(manifest.hooks.preToolUse)
+      preToolUse: dedupeHookEntries(manifest.hooks.preToolUse),
+      ...manifest.hooks.settingsBaseline ? {
+        settingsBaseline: {
+          exists: manifest.hooks.settingsBaseline.exists,
+          ...manifest.hooks.settingsBaseline.rawContent !== void 0 ? { rawContent: manifest.hooks.settingsBaseline.rawContent } : {}
+        }
+      } : {}
     };
   }
   if (manifest.gitignore) {
@@ -768,7 +785,8 @@ async function mergeSetupInjectionManifest(basePath2, patch) {
         preToolUse: [
           ...current.hooks?.preToolUse ?? [],
           ...patch.hooks.preToolUse
-        ]
+        ],
+        settingsBaseline: current.hooks?.settingsBaseline ?? patch.hooks.settingsBaseline
       }
     } : {}
   });
@@ -868,33 +886,55 @@ function dedupeHookEntries2(entries) {
   }
   return result;
 }
+function isHookEntry2(value) {
+  return Boolean(value) && typeof value === "object" && typeof value.matcher === "string" && Array.isArray(value.hooks) && value.hooks.every((hook) => Boolean(hook) && typeof hook.type === "string" && typeof hook.prompt === "string");
+}
+function serializeHookEntry(entry) {
+  return JSON.stringify({
+    matcher: entry.matcher,
+    hooks: entry.hooks.map((hook) => ({ type: hook.type, prompt: hook.prompt }))
+  });
+}
+function normalizeCleanupContent(content) {
+  if (content.trim().length === 0) {
+    return "";
+  }
+  return content.replace(/^\n+/, "").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
+}
 function cleanupClaudeContent(content, manifest) {
   const claude = manifest.claudeMd;
-  if (!claude) return null;
-  let next = content;
-  if (claude.block.length > 0 && next.includes(claude.block)) {
-    next = next.replace(claude.block, "");
-  } else {
-    next = next.replace(/\n*<!-- flowpilot:start -->[\s\S]*?<!-- flowpilot:end -->\n*/g, "\n");
+  if (!claude || claude.block.length === 0 || !content.includes(claude.block)) {
+    return { effect: "noop" };
   }
+  let next = content.replace(claude.block, "");
   if (claude.created && claude.scaffold && next.startsWith(claude.scaffold)) {
     next = next.slice(claude.scaffold.length);
   }
-  next = next.replace(/^\n+/, "").replace(/\n{3,}/g, "\n\n");
-  if (next.trim().length === 0) {
-    return "";
+  const normalized = normalizeCleanupContent(next);
+  if (normalized.length === 0) {
+    return { effect: "delete" };
   }
-  return next.trimEnd() + "\n";
+  return normalized === content ? { effect: "noop" } : { effect: "write", content: normalized };
 }
 function cleanupHookSettings(settings, manifest) {
   const hooksManifest = manifest.hooks;
-  if (!hooksManifest) return null;
+  if (!hooksManifest) return { effect: "noop" };
   const settingsHooks = settings.hooks;
   const hooks = settingsHooks && typeof settingsHooks === "object" && !Array.isArray(settingsHooks) ? settingsHooks : {};
   const currentPreToolUse = hooks.PreToolUse;
-  const existingPreToolUse = Array.isArray(currentPreToolUse) ? currentPreToolUse.filter((entry) => Boolean(entry) && typeof entry === "object" && typeof entry.matcher === "string" && Array.isArray(entry.hooks)) : [];
-  const ownedMatchers = new Set(hooksManifest.preToolUse.map((entry) => entry.matcher));
-  const remainingPreToolUse = existingPreToolUse.filter((entry) => !ownedMatchers.has(entry.matcher));
+  const existingPreToolUse = Array.isArray(currentPreToolUse) ? currentPreToolUse.filter(isHookEntry2) : [];
+  const ownedCounts = hooksManifest.preToolUse.reduce((counts, entry) => {
+    const key = serializeHookEntry(entry);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+    return counts;
+  }, /* @__PURE__ */ new Map());
+  const remainingPreToolUse = existingPreToolUse.filter((entry) => {
+    const key = serializeHookEntry(entry);
+    const remaining = ownedCounts.get(key) ?? 0;
+    if (remaining === 0) return true;
+    ownedCounts.set(key, remaining - 1);
+    return false;
+  });
   const nextHooks = { ...hooks };
   if (remainingPreToolUse.length > 0) {
     nextHooks.PreToolUse = remainingPreToolUse;
@@ -907,14 +947,16 @@ function cleanupHookSettings(settings, manifest) {
   } else {
     delete nextSettings.hooks;
   }
-  if (hooksManifest.created) {
-    return Object.keys(nextSettings).length > 0 ? nextSettings : null;
+  if (hooksManifest.created && Object.keys(nextSettings).length === 0) {
+    return { effect: "delete" };
   }
-  return nextSettings;
+  const serializedNext = JSON.stringify(nextSettings, null, 2) + "\n";
+  const serializedCurrent = JSON.stringify(settings, null, 2) + "\n";
+  return serializedNext === serializedCurrent ? { effect: "noop" } : { effect: "write", content: serializedNext };
 }
 function cleanupGitignoreContent(content, manifest) {
   const gitignore = manifest.gitignore;
-  if (!gitignore) return null;
+  if (!gitignore) return { effect: "noop" };
   let removed = false;
   const remainingLines = content.split(/\r?\n/).filter((line) => {
     if (!removed && line.trimEnd() === gitignore.rule) {
@@ -923,14 +965,21 @@ function cleanupGitignoreContent(content, manifest) {
     }
     return true;
   });
+  if (!removed) {
+    return { effect: "noop" };
+  }
   while (remainingLines.length > 0 && remainingLines[remainingLines.length - 1] === "") {
     remainingLines.pop();
   }
   if (gitignore.created && remainingLines.length === 0) {
-    return "";
+    return { effect: "delete" };
   }
-  return remainingLines.length > 0 ? `${remainingLines.join("\n")}
+  const normalized = remainingLines.length > 0 ? `${remainingLines.join("\n")}
 ` : "";
+  if (normalized.length === 0) {
+    return { effect: "delete" };
+  }
+  return normalized === content ? { effect: "noop" } : { effect: "write", content: normalized };
 }
 var FsWorkflowRepository = class {
   root;
@@ -1286,10 +1335,10 @@ var FsWorkflowRepository = class {
     try {
       const content = await (0, import_promises2.readFile)(mdPath, "utf-8");
       const cleaned = cleanupClaudeContent(content, manifest);
-      if (cleaned === "") {
+      if (cleaned.effect === "delete") {
         await (0, import_promises2.unlink)(mdPath);
-      } else if (typeof cleaned === "string" && cleaned !== content) {
-        await (0, import_promises2.writeFile)(mdPath, cleaned, "utf-8");
+      } else if (cleaned.effect === "write") {
+        await (0, import_promises2.writeFile)(mdPath, cleaned.content, "utf-8");
       }
     } catch {
     }
@@ -1298,10 +1347,10 @@ var FsWorkflowRepository = class {
       const parsed = JSON.parse(await (0, import_promises2.readFile)(settingsPath, "utf-8"));
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         const cleaned = cleanupHookSettings(parsed, manifest);
-        if (cleaned === null) {
+        if (cleaned.effect === "delete") {
           await (0, import_promises2.unlink)(settingsPath);
-        } else {
-          await (0, import_promises2.writeFile)(settingsPath, JSON.stringify(cleaned, null, 2) + "\n", "utf-8");
+        } else if (cleaned.effect === "write") {
+          await (0, import_promises2.writeFile)(settingsPath, cleaned.content, "utf-8");
         }
       }
     } catch {
@@ -1310,10 +1359,10 @@ var FsWorkflowRepository = class {
     try {
       const content = await (0, import_promises2.readFile)(gitignorePath, "utf-8");
       const cleaned = cleanupGitignoreContent(content, manifest);
-      if (cleaned === "") {
+      if (cleaned.effect === "delete") {
         await (0, import_promises2.unlink)(gitignorePath);
-      } else if (typeof cleaned === "string" && cleaned !== content) {
-        await (0, import_promises2.writeFile)(gitignorePath, cleaned, "utf-8");
+      } else if (cleaned.effect === "write") {
+        await (0, import_promises2.writeFile)(gitignorePath, cleaned.content, "utf-8");
       }
     } catch {
     }
@@ -3470,6 +3519,7 @@ function isExplicitFailureCheckpoint(detail) {
   return CHECKPOINT_FAILURE_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 var CANONICAL_SETUP_NON_COMMITTABLE_FILES = ["CLAUDE.md", ".gitignore"];
+var FINISH_VISIBLE_RUNTIME_RESIDUE_FILES = /* @__PURE__ */ new Set([".claude/settings.json"]);
 var WorkflowService = class {
   constructor(repo2, parse) {
     this.repo = repo2;
@@ -3810,14 +3860,25 @@ ${detail}
   }
   /** 计算 finish 的 workflow-owned 提交边界，必要时拒绝最终提交 */
   async resolveFinishCommitFiles() {
-    const currentDirtyFiles = this.repo.listChangedFiles();
     const baseline = await loadDirtyBaseline(this.repo.projectRoot());
-    const comparison = compareDirtyFilesAgainstBaseline(currentDirtyFiles, baseline?.files ?? []);
     const checkpointOwnedFiles = collectOwnedFiles(await loadOwnedFiles(this.repo.projectRoot()));
     const checkpointOwnedSet = new Set(checkpointOwnedFiles);
     const persistedSetupOwnedFiles = (await loadSetupOwnedFiles(this.repo.projectRoot())).files;
     const setupOwnedFiles = [.../* @__PURE__ */ new Set([...CANONICAL_SETUP_NON_COMMITTABLE_FILES, ...persistedSetupOwnedFiles])];
     const setupOwnedSet = new Set(setupOwnedFiles);
+    await this.repo.cleanupInjections();
+    const currentDirtyFiles = this.repo.listChangedFiles();
+    const finishVisibleRuntimeResidueFiles = [...new Set(currentDirtyFiles.filter((file) => FINISH_VISIBLE_RUNTIME_RESIDUE_FILES.has(file)))];
+    if (finishVisibleRuntimeResidueFiles.length > 0) {
+      return {
+        ok: false,
+        message: [
+          "\u62D2\u7EDD\u6700\u7EC8\u63D0\u4EA4\uFF1Asetup-owned \u6587\u4EF6\u5728\u7CBE\u786E cleanup \u540E\u4ECD\u6709\u7528\u6237\u6B8B\u7559\u6539\u52A8\u3002",
+          ...finishVisibleRuntimeResidueFiles.map((file) => `- ${file}`)
+        ].join("\n")
+      };
+    }
+    const comparison = compareDirtyFilesAgainstBaseline(currentDirtyFiles, baseline?.files ?? []);
     const explainableOwnedSet = /* @__PURE__ */ new Set([...setupOwnedFiles, ...checkpointOwnedFiles]);
     if (!baseline) {
       return {
@@ -3828,13 +3889,23 @@ ${detail}
         ].join("\n")
       };
     }
-    const unexplainedDirtyFiles = baseline.files.length === 0 ? comparison.currentFiles.filter((file) => !explainableOwnedSet.has(file)) : comparison.newDirtyFiles.filter((file) => !explainableOwnedSet.has(file));
+    const unexplainedDirtyFiles = comparison.newDirtyFiles.filter((file) => !explainableOwnedSet.has(file));
     if (unexplainedDirtyFiles.length > 0) {
       return {
         ok: false,
         message: [
           "\u62D2\u7EDD\u6700\u7EC8\u63D0\u4EA4\uFF1A\u68C0\u6D4B\u5230\u672A\u5F52\u5C5E\u7ED9 workflow checkpoint \u7684\u810F\u6587\u4EF6\u3002",
           ...unexplainedDirtyFiles.map((file) => `- ${file}`)
+        ].join("\n")
+      };
+    }
+    const leftoverSetupOwnedFiles = comparison.newDirtyFiles.filter((file) => setupOwnedSet.has(file));
+    if (leftoverSetupOwnedFiles.length > 0) {
+      return {
+        ok: false,
+        message: [
+          "\u62D2\u7EDD\u6700\u7EC8\u63D0\u4EA4\uFF1Asetup-owned \u6587\u4EF6\u5728\u7CBE\u786E cleanup \u540E\u4ECD\u6709\u7528\u6237\u6B8B\u7559\u6539\u52A8\u3002",
+          ...leftoverSetupOwnedFiles.map((file) => `- ${file}`)
         ].join("\n")
       };
     }
@@ -3972,7 +4043,6 @@ ${finishBoundary.message}`;
       experimentRan,
       changedConfigKeys
     });
-    await this.repo.cleanupInjections();
     this.repo.cleanTags();
     const commitResult = this.repo.commit("finish", data.name || "\u5DE5\u4F5C\u6D41\u5B8C\u6210", `${stats}
 
