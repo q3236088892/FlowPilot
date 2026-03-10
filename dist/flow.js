@@ -412,8 +412,8 @@ cat openspec/changes/<change-name>/tasks.md | node flow.js init
 OpenSpec checkbox format (\`- [ ] 1.1 Task\`) is auto-detected. Group N tasks depend on group N-1.
 
 ### Execution Loop
-1. Run \`node flow.js next --batch\`. **NOTE: this command will REFUSE to return tasks if any previous task is still \`active\`, or if the workflow is in \`reconciling\` state. In reconciling state you must adopt/restart/skip first, and restart may only follow handling of the listed task-owned changes.**
-2. The output already contains checkpoint commands per task. For **EVERY** task in batch, dispatch a sub-agent via Task tool. **ALL Task calls in one message.** Copy the ENTIRE task block (including checkpoint commands) into each sub-agent prompt verbatim. **If the batch contains N tasks, dispatch N sub-agents immediately; do not downshift to 1 for caution.**
+1. Prefer running \`node flow.js next --batch\` when tasks are confirmed independent. **NOTE: this command will REFUSE to return tasks if any previous task is still \`active\`, or if the workflow is in \`reconciling\` state. In reconciling state you must adopt/restart/skip first, and restart may only follow handling of the listed task-owned changes. If write boundaries remain unclear, \`node flow.js next\` may be used for manual serialization.**
+2. When using batch output, the result already contains checkpoint commands per task. For **EVERY** task in batch, dispatch a sub-agent via Task tool. **ALL Task calls in one message.** Copy the ENTIRE task block (including checkpoint commands) into each sub-agent prompt verbatim. **If the batch contains N independent tasks, dispatch N sub-agents immediately; do not downshift to 1 for caution.**
 3. **After ALL sub-agents return**: run \`node flow.js status\`.
    - If any task is still \`active\` \u2192 sub-agent failed to checkpoint. Run fallback: \`echo 'summary from sub-agent output' | node flow.js checkpoint <id> --files file1 file2\`
    - **Do NOT call \`node flow.js next\` until zero active tasks remain** (the command will error anyway).
@@ -3742,6 +3742,11 @@ var WorkflowService = class {
     const persistedSetupOwnedFiles = (await loadSetupOwnedFiles(this.repo.projectRoot())).files;
     return /* @__PURE__ */ new Set([...CANONICAL_SETUP_NON_COMMITTABLE_FILES, ...persistedSetupOwnedFiles]);
   }
+  async loadPreferredClient() {
+    const config = await this.repo.loadConfig();
+    const client = config.client;
+    return client === "claude" || client === "codex" || client === "cursor" || client === "snow-cli" || client === "other" ? client : "other";
+  }
   async getResumeDirtyState(currentDirtyFiles = this.repo.listChangedFiles()) {
     const baseline = await loadDirtyBaseline(this.repo.projectRoot());
     const comparison = compareDirtyFilesAgainstBaseline(currentDirtyFiles, baseline?.files ?? []);
@@ -3865,11 +3870,13 @@ ${def.description}
 `);
     await clearReconcileState(this.repo.projectRoot());
     await saveDirtyBaseline(this.repo.projectRoot(), this.repo.listChangedFiles(), data.startTime);
+    const client = await this.loadPreferredClient();
     const setupOwnedFiles = [];
-    if (await this.repo.ensureClaudeMd("other")) {
+    if (await this.repo.ensureClaudeMd(client)) {
       setupOwnedFiles.push((await loadSetupInjectionManifest(this.repo.projectRoot())).claudeMd?.path ?? "AGENTS.md");
     }
-    if (await this.repo.ensureHooks()) setupOwnedFiles.push(".claude/settings.json");
+    if (client === "snow-cli" && await this.repo.ensureRoleMd(client)) setupOwnedFiles.push("ROLE.md");
+    if (client === "claude" && await this.repo.ensureHooks()) setupOwnedFiles.push(".claude/settings.json");
     if (await this.repo.ensureLocalStateIgnored()) setupOwnedFiles.push(".gitignore");
     await saveSetupOwnedFiles(this.repo.projectRoot(), setupOwnedFiles);
     await this.applyHistoryInsights();
@@ -3896,10 +3903,6 @@ ${def.description}
       const cascaded = cascadeSkip(data.tasks);
       const skippedByC = cascaded.filter((t, i) => t.status === "skipped" && data.tasks[i].status !== "skipped");
       if (skippedByC.length) log.debug(`next: cascade skip ${skippedByC.map((t) => t.id).join(",")}`);
-      const parallelTasks = findParallelTasks(cascaded);
-      if (parallelTasks.length > 1) {
-        throw new Error(`\u68C0\u6D4B\u5230 ${parallelTasks.length} \u4E2A\u53EF\u5E76\u884C\u4EFB\u52A1\uFF08${parallelTasks.map((taskEntry) => taskEntry.id).join(", ")}\uFF09\uFF0C\u8BF7\u4F7F\u7528 node flow.js next --batch \u4E00\u6B21\u6027\u8FD4\u56DE\u6574\u6279\u4EFB\u52A1\u3002\u6B64\u5904\u4E32\u884C\u6D3E\u53D1\u4F1A\u964D\u4F4E\u541E\u5410\u91CF\u3002`);
-      }
       const task = findNextTask(cascaded);
       if (!task) {
         await this.repo.saveProgress({ ...data, tasks: cascaded });
@@ -3938,6 +3941,12 @@ ${loopWarning}`);
       const hints = cfg.hints;
       if (hints?.length) {
         parts.push("## \u8FDB\u5316\u5EFA\u8BAE\n\n" + hints.map((h) => `- ${h}`).join("\n"));
+      }
+      const parallelTasks = findParallelTasks(cascaded);
+      if (parallelTasks.length > 1) {
+        parts.push(`## \u5E76\u884C\u63D0\u793A
+
+\u5F53\u524D\u6709 ${parallelTasks.length} \u4E2A\u4F9D\u8D56\u4E0A\u53EF\u5E76\u884C\u7684\u4EFB\u52A1\uFF08${parallelTasks.map((taskEntry) => taskEntry.id).join(", ")}\uFF09\u3002\u82E5\u786E\u8BA4\u5B83\u4EEC\u65E0\u5199\u51B2\u7A81\uFF0C\u53EF\u6539\u7528 \`node flow.js next --batch\` \u63D0\u9AD8\u541E\u5410\u91CF\u3002`);
       }
       return { task, context: parts.join("\n\n---\n\n") };
     } finally {
@@ -4077,7 +4086,7 @@ ${warns.join("\n")}` : msg;
     const { data: resumedData, resetId } = resumeProgress(data);
     this.locallyActivatedTaskIds.clear();
     const dirtyState = await this.getResumeDirtyState();
-    const shouldReconcile = hadActiveTasks.length > 0 && dirtyState.baselineFound && dirtyState.residueFiles.length > 0;
+    const shouldReconcile = hadActiveTasks.length > 0 && dirtyState.residueFiles.length > 0;
     const newData = shouldReconcile ? { ...resumedData, status: "reconciling", current: hadActiveTasks[0] ?? resumedData.current } : resumedData;
     await this.repo.saveProgress(newData);
     if (shouldReconcile) {
@@ -4263,6 +4272,9 @@ ${warns.join("\n")}` : msg;
       if (task.status === "done") return `\u4EFB\u52A1 ${id} \u5DF2\u5B8C\u6210\uFF0C\u65E0\u9700\u8DF3\u8FC7`;
       const warn = task.status === "active" ? "\uFF08\u8B66\u544A: \u8BE5\u4EFB\u52A1\u4E3A active \u72B6\u6001\uFF0C\u5B50Agent\u53EF\u80FD\u4ECD\u5728\u8FD0\u884C\uFF09" : "";
       const reconcile = data.status === "reconciling" ? await loadReconcileState(this.repo.projectRoot()) : { taskIds: [] };
+      if (data.status === "reconciling" && !reconcile.taskIds.includes(id)) {
+        throw new Error(`\u4EFB\u52A1 ${id} \u4E0D\u5728\u5F85\u63A5\u7BA1\u5217\u8868\u4E2D\uFF1B\u5F53\u524D\u5FC5\u987B\u5148\u5904\u7406 ${reconcile.taskIds.join(", ")}`);
+      }
       const remainingTaskIds = reconcile.taskIds.filter((taskId) => taskId !== id);
       const newTasks = data.tasks.map(
         (t) => t.id === id ? { ...t, status: "skipped", summary: "\u624B\u52A8\u8DF3\u8FC7" } : t
@@ -4290,6 +4302,8 @@ ${warns.join("\n")}` : msg;
   /** setup: 项目接管模式 - 写入 instruction file */
   async setup(client = "other") {
     const existing = await this.repo.loadProgress();
+    const configBefore = await this.repo.loadConfig();
+    await this.repo.saveConfig({ ...configBefore, client });
     const wrote = await this.repo.ensureClaudeMd(client);
     const roleWrote = client === "snow-cli" ? await this.repo.ensureRoleMd(client) : false;
     if (client === "claude") {

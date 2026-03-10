@@ -73,6 +73,14 @@ export class WorkflowService {
     return new Set([...CANONICAL_SETUP_NON_COMMITTABLE_FILES, ...persistedSetupOwnedFiles]);
   }
 
+  private async loadPreferredClient(): Promise<SetupClient> {
+    const config = await this.repo.loadConfig();
+    const client = config.client;
+    return client === 'claude' || client === 'codex' || client === 'cursor' || client === 'snow-cli' || client === 'other'
+      ? client
+      : 'other';
+  }
+
   private async getResumeDirtyState(currentDirtyFiles = this.repo.listChangedFiles()): Promise<{
     lines: string[];
     residueFiles: string[];
@@ -216,11 +224,13 @@ export class WorkflowService {
     await this.repo.saveSummary(`# ${def.name}\n\n${def.description}\n`);
     await clearReconcileState(this.repo.projectRoot());
     await saveDirtyBaseline(this.repo.projectRoot(), this.repo.listChangedFiles(), data.startTime);
+    const client = await this.loadPreferredClient();
     const setupOwnedFiles: string[] = [];
-    if (await this.repo.ensureClaudeMd('other')) {
+    if (await this.repo.ensureClaudeMd(client)) {
       setupOwnedFiles.push((await loadSetupInjectionManifest(this.repo.projectRoot())).claudeMd?.path ?? 'AGENTS.md');
     }
-    if (await this.repo.ensureHooks()) setupOwnedFiles.push('.claude/settings.json');
+    if (client === 'snow-cli' && await this.repo.ensureRoleMd(client)) setupOwnedFiles.push('ROLE.md');
+    if (client === 'claude' && await this.repo.ensureHooks()) setupOwnedFiles.push('.claude/settings.json');
     if (await this.repo.ensureLocalStateIgnored()) setupOwnedFiles.push('.gitignore');
     await saveSetupOwnedFiles(this.repo.projectRoot(), setupOwnedFiles);
 
@@ -259,11 +269,6 @@ export class WorkflowService {
       const cascaded = cascadeSkip(data.tasks);
       const skippedByC = cascaded.filter((t, i) => t.status === 'skipped' && data.tasks[i].status !== 'skipped');
       if (skippedByC.length) log.debug(`next: cascade skip ${skippedByC.map(t => t.id).join(',')}`);
-
-      const parallelTasks = findParallelTasks(cascaded);
-      if (parallelTasks.length > 1) {
-        throw new Error(`检测到 ${parallelTasks.length} 个可并行任务（${parallelTasks.map(taskEntry => taskEntry.id).join(', ')}），请使用 node flow.js next --batch 一次性返回整批任务。此处串行派发会降低吞吐量。`);
-      }
 
       const task = findNextTask(cascaded);
       if (!task) {
@@ -313,6 +318,11 @@ export class WorkflowService {
       const hints = (cfg as any).hints as string[] | undefined;
       if (hints?.length) {
         parts.push('## 进化建议\n\n' + hints.map(h => `- ${h}`).join('\n'));
+      }
+
+      const parallelTasks = findParallelTasks(cascaded);
+      if (parallelTasks.length > 1) {
+        parts.push(`## 并行提示\n\n当前有 ${parallelTasks.length} 个依赖上可并行的任务（${parallelTasks.map(taskEntry => taskEntry.id).join(', ')}）。若确认它们无写冲突，可改用 \`node flow.js next --batch\` 提高吞吐量。`);
       }
 
       return { task, context: parts.join('\n\n---\n\n') };
@@ -477,7 +487,7 @@ export class WorkflowService {
     const { data: resumedData, resetId } = resumeProgress(data);
     this.locallyActivatedTaskIds.clear();
     const dirtyState = await this.getResumeDirtyState();
-    const shouldReconcile = hadActiveTasks.length > 0 && dirtyState.baselineFound && dirtyState.residueFiles.length > 0;
+    const shouldReconcile = hadActiveTasks.length > 0 && dirtyState.residueFiles.length > 0;
     const newData = shouldReconcile
       ? { ...resumedData, status: 'reconciling' as const, current: hadActiveTasks[0] ?? resumedData.current }
       : resumedData;
@@ -689,6 +699,9 @@ export class WorkflowService {
       const reconcile = data.status === 'reconciling'
         ? await loadReconcileState(this.repo.projectRoot())
         : { taskIds: [] };
+      if (data.status === 'reconciling' && !reconcile.taskIds.includes(id)) {
+        throw new Error(`任务 ${id} 不在待接管列表中；当前必须先处理 ${reconcile.taskIds.join(', ')}`);
+      }
       const remainingTaskIds = reconcile.taskIds.filter(taskId => taskId !== id);
       const newTasks = data.tasks.map(t =>
         t.id === id ? { ...t, status: 'skipped' as const, summary: '手动跳过' } : t
@@ -716,6 +729,8 @@ export class WorkflowService {
   /** setup: 项目接管模式 - 写入 instruction file */
   async setup(client: SetupClient = 'other'): Promise<string> {
     const existing = await this.repo.loadProgress();
+    const configBefore = await this.repo.loadConfig();
+    await this.repo.saveConfig({ ...configBefore, client });
     const wrote = await this.repo.ensureClaudeMd(client);
     const roleWrote = client === 'snow-cli' ? await this.repo.ensureRoleMd(client) : false;
     if (client === 'claude') {

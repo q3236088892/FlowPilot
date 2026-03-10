@@ -257,6 +257,24 @@ describe('WorkflowService 集成测试', () => {
     expect(msg).not.toContain('干净重启');
   });
 
+  it('resume在 baseline 缺失但存在中断后待接管变更时仍进入 reconciling', async () => {
+    const repo = new FsWorkflowRepository(dir);
+    const changedFilesSpy = vi.spyOn(repo, 'listChangedFiles');
+    changedFilesSpy.mockReturnValueOnce([]);
+    changedFilesSpy.mockReturnValueOnce(['src/legacy.ts']);
+    svc = new WorkflowService(repo, parseTasksMarkdown);
+
+    await svc.init(TASKS_MD);
+    await rm(join(dir, '.workflow', 'dirty-baseline.json'), { force: true });
+    await svc.next();
+
+    const msg = await svc.resume();
+
+    expect(msg).toContain('已暂停继续调度');
+    expect(msg).toContain('node flow.js adopt 001');
+    await expect(svc.next()).rejects.toThrow(/adopt|restart|skip/);
+  });
+
   it('resume会过滤 FlowPilot 运行时变更，不把 .claude/settings.json 误报为项目变更', async () => {
     await initGitRepo(dir);
     const repo = new FsWorkflowRepository(dir);
@@ -339,11 +357,13 @@ describe('WorkflowService 集成测试', () => {
     expect(batch.map(b => b.task.id)).toEqual(['001', '002']);
   });
 
-  it('next在存在多个可并行任务时拒绝串行派发', async () => {
+  it('next在存在多个可并行任务时允许串行返回首个任务，并提示可改用 batch', async () => {
     const md = '# 并行测试\n\n1. [backend] A\n2. [frontend] B\n3. [general] C (deps: 1,2)';
     await svc.init(md);
 
-    await expect(svc.next()).rejects.toThrow(/next --batch|并行|吞吐/);
+    const result = await svc.next();
+    expect(result?.task.id).toBe('001');
+    expect(result?.context).toContain('next --batch');
   });
 
   it('init在setup前记录工作流初始dirty baseline', async () => {
@@ -515,6 +535,12 @@ describe('WorkflowService 集成测试', () => {
     expect(await readFile(join(dir, '.claude', 'settings.json'), 'utf-8')).toContain('TaskCreate');
   });
 
+  it('setup 选择 Codex 后，后续 init 不会生成 .claude/settings.json', async () => {
+    await svc.setup('codex');
+    await svc.init(TASKS_MD, true);
+    await expect(readFile(join(dir, '.claude', 'settings.json'), 'utf-8')).rejects.toThrow();
+  });
+
   it('setup 选择 Codex 时不生成 .claude/settings.json', async () => {
     await svc.setup('codex');
     await expect(readFile(join(dir, '.claude', 'settings.json'), 'utf-8')).rejects.toThrow();
@@ -539,6 +565,21 @@ describe('WorkflowService 集成测试', () => {
     await svc.setup('other');
     const content = await readFile(join(dir, 'AGENTS.md'), 'utf-8');
     expect(content).not.toContain('multi_agent');
+  });
+
+  it('reconciling 状态下 skip 不允许跳过待接管列表之外的任务', async () => {
+    const md = '# 待接管测试\n\n1. [backend] A\n2. [frontend] B';
+    const repo = new FsWorkflowRepository(dir);
+    const changedFilesSpy = vi.spyOn(repo, 'listChangedFiles');
+    changedFilesSpy.mockReturnValueOnce([]);
+    changedFilesSpy.mockReturnValueOnce(['src/feature.ts']);
+    svc = new WorkflowService(repo, parseTasksMarkdown);
+
+    await svc.init(md);
+    await svc.next();
+    await svc.resume();
+
+    await expect(svc.skip('002')).rejects.toThrow(/待接管列表/);
   });
 
   it('checkpoint提取[REMEMBER]标记写入永久记忆', async () => {
@@ -990,6 +1031,7 @@ describe('WorkflowService 集成测试', () => {
     vi.spyOn(repo, 'verify').mockReturnValue({ passed: true, scripts: ['npm test'] });
     svc = new WorkflowService(repo, parseTasksMarkdown);
 
+    await svc.setup('claude');
     await completeWorkflow(svc);
     const settingsPath = join(dir, '.claude', 'settings.json');
     const settings = JSON.parse(await readFile(settingsPath, 'utf-8'));
@@ -1019,6 +1061,7 @@ describe('WorkflowService 集成测试', () => {
     vi.spyOn(repo, 'verify').mockReturnValue({ passed: true, scripts: ['npm test'] });
     svc = new WorkflowService(repo, parseTasksMarkdown);
 
+    await svc.setup('claude');
     await completeWorkflow(svc);
     const settingsPath = join(dir, '.claude', 'settings.json');
     const settings = JSON.parse(await readFile(settingsPath, 'utf-8'));
