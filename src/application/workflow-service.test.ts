@@ -357,6 +357,15 @@ describe('WorkflowService 集成测试', () => {
     expect(batch.map(b => b.task.id)).toEqual(['001', '002']);
   });
 
+  it('nextBatch不再受parallelLimit配置裁剪', async () => {
+    const md = '# 并行测试\n\n1. [backend] A\n2. [frontend] B\n3. [general] C\n4. [general] D';
+    const repo = new FsWorkflowRepository(dir);
+    await repo.saveConfig({ parallelLimit: 1 });
+    await svc.init(md);
+    const batch = await svc.nextBatch();
+    expect(batch.map(b => b.task.id)).toEqual(['001', '002', '003', '004']);
+  });
+
   it('next在存在多个可并行任务时允许串行返回首个任务，并提示可改用 batch', async () => {
     const md = '# 并行测试\n\n1. [backend] A\n2. [frontend] B\n3. [general] C (deps: 1,2)';
     await svc.init(md);

@@ -157,7 +157,7 @@ Round 3: Polish → Code quality improvement → Final verification
 
 ### Self-Evolution — Each Round Makes the Next Smarter
 
-FlowPilot has a built-in three-phase organic evolution cycle. Both success and failure trigger evolution, with results written to `.flowpilot/config.json` and consumed by maxRetries / hints / verify / hooks; `parallelLimit` remains a manual operator setting and is not rewritten by automatic evolution:
+FlowPilot has a built-in three-phase organic evolution cycle. Both success and failure trigger evolution, with results written to `.flowpilot/config.json` and consumed by maxRetries / hints / verify / hooks; the historical `parallelLimit` field no longer affects runtime batch sizing and is not rewritten by automatic evolution:
 
 ```
 finish() triggers:
@@ -182,7 +182,6 @@ Evolution results directly affect workflow behavior:
 | Parameter | Effect |
 |-----------|--------|
 | `maxRetries` | Determines retry count on checkpoint failure |
-| `parallelLimit` | Limits parallel task count in `nextBatch`; when unset FlowPilot does not artificially cap the batch, and `1` effectively forces serial execution (manual-only, not evolution-managed) |
 | `hints` | Injected into sub-agent context as "evolution suggestions" |
 
 - On success: optimize retries and experience hints
@@ -307,7 +306,7 @@ Main Agent (dispatcher, < 100 lines context)
   │       └─ task-xxx.md    # Detailed output per task
   │
   └─ .flowpilot/ (local persistent product state)
-      ├─ config.json        # Persistent config (maxRetries/parallelLimit/hints/verify/hooks)
+      ├─ config.json        # Persistent config (maxRetries/hints/verify/hooks, etc.)
       ├─ memory.json        # Long-term memory store (knowledge entries + tags + timestamps)
       └─ evolution/         # Evolution history (reflect/experiment/review records)
 ```

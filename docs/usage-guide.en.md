@@ -527,7 +527,7 @@ Uses Claude Haiku for deep analysis when `ANTHROPIC_API_KEY` is available, falls
 **Phase 2: Experiment** — Auto-triggered at end of `finish()`
 
 Auto-adjusts based on reflect report:
-- **Config params**: `maxRetries`, `timeout`, `parallelLimit`, `verifyTimeout`
+- **Config params**: `maxRetries`, `timeout`, `verifyTimeout`
 - **Protocol template**: Appends experience rules to protocol.md
 
 Full snapshot saved before each modification for rollback support.
@@ -560,7 +560,6 @@ Parameters adjusted during the Experiment phase take effect in the next workflow
 | Parameter | Description | Adjustment Scenario |
 |-----------|-------------|-------------------|
 | `maxRetries` | Max task retry count | Increased when retry hotspots are frequent, decreased when all succeed |
-| `parallelLimit` | Max parallel sub-agents; when unset there is no artificial cap, and `1` effectively forces serial execution | Manual-only; not changed by automatic evolution |
 | `hints` | Experience rules appended to protocol template | Specific advice distilled from failure patterns |
 | `verifyTimeout` | Verification timeout | Increased when verification times out |
 

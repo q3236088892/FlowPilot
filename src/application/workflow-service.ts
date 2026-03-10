@@ -352,11 +352,6 @@ export class WorkflowService {
         return [];
       }
 
-      // 消费 config.parallelLimit
-      const config = await this.repo.loadConfig();
-      const limit = (config as any).parallelLimit;
-      if (limit && tasks.length > limit) tasks = tasks.slice(0, limit);
-
       log.debug(`nextBatch: 激活 ${tasks.map(t => t.id).join(',')}`);
       const activeIds = new Set(tasks.map(t => t.id));
       const activated = cascaded.map(t => activeIds.has(t.id) ? { ...t, status: 'active' as const } : t);
@@ -371,6 +366,7 @@ export class WorkflowService {
 
       const summary = await this.repo.loadSummary();
       const loopWarning = await this.loadAndClearLoopWarning();
+      const config = await this.repo.loadConfig();
       const results: { task: TaskEntry; context: string }[] = [];
 
       for (const task of tasks) {

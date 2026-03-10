@@ -4,7 +4,7 @@
 
 ## 这是什么
 
-一个 99KB 的单文件工具，让 Claude Code 变成全自动开发机器。
+一个单文件工具，让 Claude Code / Codex / Cursor / snow-cli 等客户端进入全自动开发模式。
 复制一个文件到项目里，一句开发需求，它就会自动拆解需求、分配任务、写代码、提交 git、跑测试，直到全部完成。
 
 ## 快速开始
@@ -23,7 +23,7 @@ claude --dangerously-skip-permissions
 
 初始化时会直接显示客户端选项：
 - `Claude Code`：生成 `AGENTS.md` + `.claude/settings.json`
-- `Codex`：生成 `AGENTS.md`，并附加 Codex 平台增强规则
+- `Codex`：生成 `AGENTS.md`，并附加 Codex 平台增强规则（并行调度 + 子任务契约）
 - `Cursor` / `Other`：生成通用版 `AGENTS.md`
 - `snow-cli`：生成 `AGENTS.md` + `ROLE.md`
 
@@ -74,6 +74,8 @@ node flow.js init
   - `CLAUDE.md` — 仅兼容旧项目，已有时继续复用
   - `ROLE.md` — 仅在选择 `snow-cli` 时额外生成，内容与 `AGENTS.md` 一致
   - `.claude/settings.json` — 仅在选择 `Claude Code` 时生成
+- 生成的 instruction file 会将终端输出风格作为硬约束，并默认强化依赖分析、并行调度与危险操作确认；其中 `Codex` 额外补强子任务下发契约（代理名称 / 任务定义 / 执行动作 / 预期结果）
+- `Codex` 的增强规则还会显式要求按“任务分析 → 并行调度与子任务下发 → 结果汇总 → 递归迭代”推进复杂任务
 - `.workflow/` 目录 — 本地临时运行态
 - `.gitignore` 本地状态忽略规则（若缺失）— 默认忽略 `.workflow/`、`.flowpilot/`、`.claude/settings.json`、`.claude/worktrees/`
 
@@ -435,7 +437,7 @@ FlowPilot 内置三阶段自我进化循环，灵感来自 [Memoh-v2](https://gi
 **Phase 2: Experiment（实验）** — `finish()` 末尾自动触发
 
 基于反思报告自动调整：
-- **config 参数**：`maxRetries`、`timeout`、`parallelLimit`、`verifyTimeout`
+- **config 参数**：`maxRetries`、`timeout`、`verifyTimeout`
 - **协议模板**：在 protocol.md 末尾追加经验规则
 
 每次修改前保存完整快照，支持回滚。
@@ -468,7 +470,6 @@ Experiment 阶段自动调整的参数会在下一轮工作流中生效：
 | 参数 | 说明 | 调整场景 |
 |------|------|---------|
 | `maxRetries` | 任务最大重试次数 | 重试热点多时增大，全部成功时减小 |
-| `parallelLimit` | 最大并行子Agent数；未设置时不封顶，设为 `1` 会强制串行 | 仅手动调节，不由自动进化修改 |
 | `hints` | 协议模板追加的经验规则 | 从失败模式中提炼的具体建议 |
 | `verifyTimeout` | 验证超时时间 | 验证超时时增大 |
 
