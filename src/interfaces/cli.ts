@@ -7,12 +7,20 @@ import { readFileSync } from 'fs';
 import { resolve, relative } from 'path';
 import type { WorkflowService } from '../application/workflow-service';
 import { formatStatus, formatTask, formatBatch } from './formatter';
-import { readStdinIfPiped } from './stdin';
+import { promptSetupClient, readStdinIfPiped } from './stdin';
 import { enableVerbose } from '../infrastructure/logger';
+import type { SetupClient } from '../domain/types';
 
+interface CliDeps {
+  readStdinIfPiped?: typeof readStdinIfPiped;
+  promptSetupClient?: () => Promise<SetupClient>;
+}
 
 export class CLI {
-  constructor(private readonly service: WorkflowService) {}
+  constructor(
+    private readonly service: WorkflowService,
+    private readonly deps: CliDeps = {},
+  ) {}
 
   async run(argv: string[]): Promise<void> {
     const args = argv.slice(2);
@@ -38,13 +46,14 @@ export class CLI {
     switch (cmd) {
       case 'init': {
         const force = rest.includes('--force');
-        const md = await readStdinIfPiped();
+        const md = await (this.deps.readStdinIfPiped ?? readStdinIfPiped)();
         let out: string;
         if (md.trim()) {
           const data = await s.init(md, force);
           out = `已初始化工作流: ${data.name} (${data.tasks.length} 个任务)`;
         } else {
-          out = await s.setup();
+          const client = await (this.deps.promptSetupClient ?? promptSetupClient)();
+          out = await s.setup(client);
         }
         return out + '\n\n提示: 建议先通过 /plugin 安装插件 superpowers、frontend-design、feature-dev、code-review、context7，未安装则子Agent无法使用专业技能，功能会降级';
       }
@@ -83,7 +92,7 @@ export class CLI {
         } else if (rest.length > 1 && fileIdx < 0 && filesIdx < 0) {
           detail = rest.slice(1).join(' ');
         } else {
-          detail = await readStdinIfPiped();
+          detail = await (this.deps.readStdinIfPiped ?? readStdinIfPiped)();
         }
         return await s.checkpoint(id, detail.trim(), files);
       }
@@ -110,7 +119,7 @@ export class CLI {
         } else if (rest.length > 1 && fileIdx < 0 && filesIdx < 0) {
           detail = rest.slice(1).join(' ');
         } else {
-          detail = await readStdinIfPiped();
+          detail = await (this.deps.readStdinIfPiped ?? readStdinIfPiped)();
         }
         return await s.adopt(id, detail.trim(), files);
       }
@@ -152,7 +161,7 @@ export class CLI {
       }
 
       case 'evolve': {
-        const text = await readStdinIfPiped();
+        const text = await (this.deps.readStdinIfPiped ?? readStdinIfPiped)();
         if (!text.trim()) throw new Error('需要通过 stdin 传入反思结果');
         return await s.evolve(text.trim());
       }
@@ -180,7 +189,7 @@ export class CLI {
 }
 
 const USAGE = `用法: node flow.js [--verbose] <command>
-  init [--force]       初始化工作流 (stdin传入任务markdown，无stdin则接管项目)
+  init [--force]       初始化工作流 (stdin传入任务markdown，无stdin则显示客户端选项并接管项目)
   next [--batch]       获取下一个待执行任务 (--batch 返回所有可并行任务)
   checkpoint <id>      记录任务完成 [--file <path> | stdin | 内联文本] [--files f1 f2 ...]
   adopt <id>           接管中断后待接管变更并补 checkpoint [--file <path> | stdin | 内联文本] [--files f1 f2 ...]

@@ -323,7 +323,44 @@ function detectCommands(cwd) {
 }
 
 // src/infrastructure/protocol-template.ts
-var PROTOCOL_TEMPLATE = `<!-- flowpilot:start -->
+var COMMON_AGENT_GUIDELINES = `
+## \u901A\u7528\u5DE5\u4F5C\u89C4\u8303
+
+### \u8BED\u8A00\u89C4\u8303
+- \u9ED8\u8BA4\u4F7F\u7528\u7B80\u4F53\u4E2D\u6587\u6C9F\u901A\u3001\u89E3\u91CA\u4E0E\u603B\u7ED3\uFF0C\u9664\u975E\u7528\u6237\u660E\u786E\u8981\u6C42\u5176\u4ED6\u8BED\u8A00\u3002
+
+### \u8F93\u51FA\u98CE\u683C
+- \u5148\u7ED9\u7ED3\u8BBA\uFF0C\u518D\u7ED9\u5FC5\u8981\u7EC6\u8282\u3002
+- \u4FDD\u6301\u7B80\u6D01\u3001\u6E05\u6670\u3001\u7EC8\u7AEF\u53CB\u597D\u3002
+- \u4F18\u5148\u4F7F\u7528\u77ED\u6BB5\u843D\u3001\u77ED\u5217\u8868\u548C\u660E\u786E\u6807\u9898\uFF0C\u907F\u514D\u5197\u957F\u94FA\u9648\u3002
+- \u53EF\u9002\u5EA6\u4F7F\u7528 emoji \u5F3A\u5316\u89C6\u89C9\u5F15\u5BFC\uFF0C\u4F46\u4E0D\u8981\u5806\u780C\u3002
+
+### \u4EFB\u52A1\u6267\u884C
+- \u5148\u5206\u6790\uFF0C\u518D\u6267\u884C\u3002
+- \u80FD\u5E76\u884C\u5C31\u5E76\u884C\uFF1B\u53EA\u6709\u5B58\u5728\u771F\u5B9E\u4F9D\u8D56\u65F6\u624D\u4E32\u884C\u3002
+- \u5E76\u884C\u4EFB\u52A1\u5FC5\u987B\u907F\u514D\u5199\u51B2\u7A81\uFF1B\u82E5\u5B58\u5728\u540C\u6587\u4EF6\u91CD\u53E0\u4FEE\u6539\uFF0C\u5FC5\u987B\u5148\u62C6\u6E05\u5199\u5165\u8FB9\u754C\uFF1B\u5728\u8FB9\u754C\u672A\u62C6\u6E05\u524D\uFF0C\u4E0D\u5F97\u5E76\u884C\u6D3E\u53D1\u3002
+- \u9AD8\u98CE\u9669\u64CD\u4F5C\u524D\u5FC5\u987B\u8BF4\u660E\u5F71\u54CD\u8303\u56F4\u3001\u4E3B\u8981\u98CE\u9669\uFF0C\u5E76\u83B7\u5F97\u660E\u786E\u786E\u8BA4\u3002
+
+### \u5DE5\u7A0B\u8D28\u91CF
+- \u4F18\u5148\u6B63\u786E\u6027\u3001\u53EF\u7EF4\u62A4\u6027\u4E0E\u53EF\u9A8C\u8BC1\u6027\u3002
+- \u5173\u952E\u53D8\u66F4\u8981\u6709\u6D4B\u8BD5\u3001\u9A8C\u8BC1\u6216\u660E\u786E\u8BC1\u636E\u652F\u6491\u3002
+- \u91CD\u8981\u51B3\u7B56\u4E0E\u5F02\u5E38\u8FB9\u754C\u8981\u53EF\u8FFD\u6EAF\u3002
+`;
+var CODEX_ENHANCED_GUIDELINES = `
+## Codex \u5E73\u53F0\u589E\u5F3A\u89C4\u5219
+
+### \u5E76\u884C\u4EE3\u7406\u8C03\u5EA6
+- \u5F53 Codex \u5E73\u53F0\u63D0\u4F9B \`multi_agent\`\u3001\`spawn_agent\` \u6216\u7B49\u6548\u5B50\u4EE3\u7406\u80FD\u529B\u65F6\uFF0C**\u5FC5\u987B\u4F18\u5148**\u4F7F\u7528\u5B83\u4EEC\u505A\u5E76\u884C\u8C03\u5EA6\u3002
+- \u76EE\u6807\u662F\u6700\u5927\u5316\u5B89\u5168\u5E76\u884C\u5EA6\uFF1B\u5728\u4E0D\u5B58\u5728\u771F\u5B9E\u4F9D\u8D56\u6216\u5199\u51B2\u7A81\u65F6\uFF0C\u4E0D\u5F97\u56E0\u4FDD\u5B88\u5FC3\u6001\u9000\u56DE\u5355\u4EE3\u7406\u4E32\u884C\u3002
+- \u5355\u8F6E\u6700\u591A\u53EF\u540C\u65F6\u4E0B\u53D1 **50 \u4E2A**\u5B50\u4EFB\u52A1\uFF1B\u5728\u5E73\u53F0\u80FD\u529B\u3001\u4E0A\u4E0B\u6587\u5BB9\u91CF\u548C\u4EFB\u52A1\u72EC\u7ACB\u6027\u5141\u8BB8\u65F6\uFF0C\u5E94\u5C3D\u91CF\u6253\u6EE1\u53EF\u5B89\u5168\u5E76\u884C\u7684\u5B50\u4EE3\u7406\u6570\u91CF\u3002
+- \u82E5\u4EFB\u52A1\u53EF\u72EC\u7ACB\u4E14\u65E0\u5199\u51B2\u7A81\uFF0C\u4E0D\u5F97\u53EA\u6D3E 1 \u4E2A\u5B50\u4EE3\u7406\uFF1B\u65E0\u6545\u964D\u4E3A\u5355\u4EE3\u7406\u89C6\u4E3A\u541E\u5410\u9000\u5316\u3002
+- \u53EA\u6709\u5B58\u5728\u771F\u5B9E\u4F9D\u8D56\u3001\u5199\u51B2\u7A81\u6216\u6574\u5408\u538B\u529B\u65F6\uFF0C\u624D\u5141\u8BB8\u5206\u6279\u56DE\u9000\u3002
+
+### \u5B50\u4EFB\u52A1\u5951\u7EA6
+- \u6BCF\u4E2A\u5B50\u4EFB\u52A1\u5FC5\u987B\u660E\u786E\uFF1A\u4EE3\u7406\u540D\u79F0\u3001\u4EFB\u52A1\u5B9A\u4E49\u3001\u6267\u884C\u8FB9\u754C\u3001\u9884\u671F\u7ED3\u679C\u3002
+- \u5B50\u4EFB\u52A1\u95F4\u5FC5\u987B\u4FDD\u6301\u6587\u4EF6\u8FB9\u754C\u6E05\u6670\uFF1B\u4E0D\u5F97\u8BA9\u591A\u4E2A\u5B50\u4EE3\u7406\u540C\u65F6\u4FEE\u6539\u540C\u4E00\u5757\u4EE3\u7801\u3002
+`;
+var FLOWPILOT_PROTOCOL_BODY = `
 ## FlowPilot Workflow Protocol (MANDATORY \u2014 any violation is a protocol failure)
 
 **You are the dispatcher. These rules have the HIGHEST priority and are ALWAYS active.**
@@ -427,8 +464,16 @@ echo '\u6458\u8981 [REMEMBER] \u5173\u952E\u53D1\u73B0 [DECISION] \u6280\u672F\u
    - Tags: \`[CONFIG]\` for config changes, \`[PROTOCOL]\` for instruction-file protocol changes
 5. Run \`node flow.js finish\` again \u2014 verify passes + review done \u2192 final commit \u2192 idle.
 **Loop: finish(verify) \u2192 review(code-review) \u2192 evolve(AI\u53CD\u601D) \u2192 fix \u2192 finish again. All gates must pass.**
-
+`;
+function getProtocolTemplate(client = "other") {
+  const codexBlock = client === "codex" ? `${CODEX_ENHANCED_GUIDELINES}
+` : "";
+  return `<!-- flowpilot:start -->
+${COMMON_AGENT_GUIDELINES}
+${codexBlock}${FLOWPILOT_PROTOCOL_BODY}
 <!-- flowpilot:end -->`;
+}
+var PROTOCOL_TEMPLATE = getProtocolTemplate("other");
 
 // src/infrastructure/runtime-state.ts
 var import_fs = require("fs");
@@ -503,7 +548,7 @@ function isGitignoreInjectionState(value) {
   return isRecord(value) && typeof value.created === "boolean" && Array.isArray(value.rules) && value.rules.every((rule) => typeof rule === "string") && (value.baseline === void 0 || isExactFileSnapshot(value.baseline));
 }
 function isSetupInjectionManifest(value) {
-  return isRecord(value) && (value.claudeMd === void 0 || isClaudeMdInjectionState(value.claudeMd)) && (value.hooks === void 0 || isHooksInjectionState(value.hooks)) && (value.gitignore === void 0 || isGitignoreInjectionState(value.gitignore));
+  return isRecord(value) && (value.claudeMd === void 0 || isClaudeMdInjectionState(value.claudeMd)) && (value.roleMd === void 0 || isClaudeMdInjectionState(value.roleMd)) && (value.hooks === void 0 || isHooksInjectionState(value.hooks)) && (value.gitignore === void 0 || isGitignoreInjectionState(value.gitignore));
 }
 function normalizeSetupOwnedState(state) {
   return {
@@ -542,6 +587,14 @@ function normalizeSetupInjectionManifest(manifest) {
       block: manifest.claudeMd.block,
       ...manifest.claudeMd.path !== void 0 ? { path: manifest.claudeMd.path } : {},
       ...manifest.claudeMd.scaffold !== void 0 ? { scaffold: manifest.claudeMd.scaffold } : {}
+    };
+  }
+  if (manifest.roleMd) {
+    normalized.roleMd = {
+      created: manifest.roleMd.created,
+      block: manifest.roleMd.block,
+      ...manifest.roleMd.path !== void 0 ? { path: manifest.roleMd.path } : {},
+      ...manifest.roleMd.scaffold !== void 0 ? { scaffold: manifest.roleMd.scaffold } : {}
     };
   }
   if (manifest.hooks) {
@@ -824,6 +877,7 @@ async function mergeSetupInjectionManifest(basePath2, patch) {
   const next = normalizeSetupInjectionManifest({
     ...current,
     ...patch.claudeMd ? { claudeMd: patch.claudeMd } : {},
+    ...patch.roleMd ? { roleMd: patch.roleMd } : {},
     ...patch.gitignore ? { gitignore: patch.gitignore } : {},
     ...patch.hooks ? {
       hooks: {
@@ -856,6 +910,7 @@ var LEGACY_RUNTIME_DIR = ".workflow";
 var CONFIG_FILE = "config.json";
 var PRIMARY_INSTRUCTION_FILE = "AGENTS.md";
 var LEGACY_INSTRUCTION_FILE = "CLAUDE.md";
+var ROLE_INSTRUCTION_FILE = "ROLE.md";
 var VALID_WORKFLOW_STATUS = /* @__PURE__ */ new Set(["idle", "running", "reconciling", "finishing", "completed", "aborted"]);
 var VALID_TASK_STATUS = /* @__PURE__ */ new Set(["pending", "active", "done", "skipped", "failed"]);
 function parseProgressMarkdown(raw) {
@@ -904,7 +959,7 @@ async function readPersistedConfig(basePath2) {
   if (currentConfig) return currentConfig;
   return readConfigFile((0, import_path2.join)(basePath2, LEGACY_RUNTIME_DIR, CONFIG_FILE));
 }
-async function loadProtocolTemplate(basePath2) {
+async function loadProtocolTemplate(basePath2, client = "other") {
   const config = await readPersistedConfig(basePath2);
   const protocolTemplate = config?.protocolTemplate;
   if (typeof protocolTemplate === "string" && protocolTemplate.length > 0) {
@@ -913,7 +968,7 @@ async function loadProtocolTemplate(basePath2) {
     } catch {
     }
   }
-  return PROTOCOL_TEMPLATE;
+  return client === "other" ? PROTOCOL_TEMPLATE : getProtocolTemplate(client);
 }
 function hookEntry(matcher) {
   return {
@@ -978,6 +1033,32 @@ async function resolveInstructionFile(basePath2) {
   } catch {
   }
   return { absPath: primaryPath, relPath: PRIMARY_INSTRUCTION_FILE };
+}
+async function ensureInstructionDocument(basePath2, relPath, client = "other") {
+  const path = (0, import_path2.join)(basePath2, relPath);
+  const marker = "<!-- flowpilot:start -->";
+  const block = (await loadProtocolTemplate(basePath2, client)).trim();
+  let created = false;
+  let scaffold = "";
+  try {
+    const content = await (0, import_promises2.readFile)(path, "utf-8");
+    if (content.includes(marker)) return false;
+    await (0, import_promises2.writeFile)(path, content.trimEnd() + "\n\n" + block + "\n", "utf-8");
+  } catch {
+    created = true;
+    scaffold = "# Project\n\n";
+    await (0, import_promises2.writeFile)(path, `${scaffold}${block}
+`, "utf-8");
+  }
+  await mergeSetupInjectionManifest(basePath2, {
+    [relPath === ROLE_INSTRUCTION_FILE ? "roleMd" : "claudeMd"]: {
+      created,
+      block,
+      path: relPath,
+      ...created ? { scaffold } : {}
+    }
+  });
+  return true;
 }
 function cleanupHookSettings(settings, manifest) {
   const hooksManifest = manifest.hooks;
@@ -1270,31 +1351,12 @@ var FsWorkflowRepository = class {
       return null;
     }
   }
-  async ensureClaudeMd() {
-    const { absPath: path, relPath } = await resolveInstructionFile(this.base);
-    const marker = "<!-- flowpilot:start -->";
-    const block = (await loadProtocolTemplate(this.base)).trim();
-    let created = false;
-    let scaffold = "";
-    try {
-      const content = await (0, import_promises2.readFile)(path, "utf-8");
-      if (content.includes(marker)) return false;
-      await (0, import_promises2.writeFile)(path, content.trimEnd() + "\n\n" + block + "\n", "utf-8");
-    } catch {
-      created = true;
-      scaffold = "# Project\n\n";
-      await (0, import_promises2.writeFile)(path, `${scaffold}${block}
-`, "utf-8");
-    }
-    await mergeSetupInjectionManifest(this.base, {
-      claudeMd: {
-        created,
-        block,
-        path: relPath,
-        ...created ? { scaffold } : {}
-      }
-    });
-    return true;
+  async ensureClaudeMd(client = "other") {
+    const { relPath } = await resolveInstructionFile(this.base);
+    return ensureInstructionDocument(this.base, relPath, client);
+  }
+  async ensureRoleMd(client = "other") {
+    return ensureInstructionDocument(this.base, ROLE_INSTRUCTION_FILE, client);
   }
   async ensureHooks() {
     const dir = (0, import_path2.join)(this.base, ".claude");
@@ -1431,17 +1493,21 @@ var FsWorkflowRepository = class {
   /** 清理注入的 instruction file 协议块、hooks 和 .gitignore 规则，仅移除 FlowPilot-owned 内容 */
   async cleanupInjections() {
     const manifest = await loadSetupInjectionManifest(this.base);
-    const mdRelPath = manifest.claudeMd?.path ?? LEGACY_INSTRUCTION_FILE;
-    const mdPath = (0, import_path2.join)(this.base, mdRelPath);
-    try {
-      const content = await (0, import_promises2.readFile)(mdPath, "utf-8");
-      const cleaned = cleanupClaudeContent(content, manifest);
-      if (cleaned.effect === "delete") {
-        await (0, import_promises2.unlink)(mdPath);
-      } else if (cleaned.effect === "write") {
-        await (0, import_promises2.writeFile)(mdPath, cleaned.content, "utf-8");
+    for (const mdRelPath of [manifest.claudeMd?.path ?? LEGACY_INSTRUCTION_FILE, manifest.roleMd?.path].filter(Boolean)) {
+      const mdPath = (0, import_path2.join)(this.base, mdRelPath);
+      try {
+        const content = await (0, import_promises2.readFile)(mdPath, "utf-8");
+        const cleaned = cleanupClaudeContent(content, {
+          ...manifest,
+          claudeMd: mdRelPath === manifest.roleMd?.path ? manifest.roleMd : manifest.claudeMd
+        });
+        if (cleaned.effect === "delete") {
+          await (0, import_promises2.unlink)(mdPath);
+        } else if (cleaned.effect === "write") {
+          await (0, import_promises2.writeFile)(mdPath, cleaned.content, "utf-8");
+        }
+      } catch {
       }
-    } catch {
     }
     const claudeDirPath = (0, import_path2.join)(this.base, ".claude");
     const settingsPath = (0, import_path2.join)(claudeDirPath, "settings.json");
@@ -3800,7 +3866,7 @@ ${def.description}
     await clearReconcileState(this.repo.projectRoot());
     await saveDirtyBaseline(this.repo.projectRoot(), this.repo.listChangedFiles(), data.startTime);
     const setupOwnedFiles = [];
-    if (await this.repo.ensureClaudeMd()) {
+    if (await this.repo.ensureClaudeMd("other")) {
       setupOwnedFiles.push((await loadSetupInjectionManifest(this.repo.projectRoot())).claudeMd?.path ?? "AGENTS.md");
     }
     if (await this.repo.ensureHooks()) setupOwnedFiles.push(".claude/settings.json");
@@ -4222,10 +4288,13 @@ ${warns.join("\n")}` : msg;
     }
   }
   /** setup: 项目接管模式 - 写入 instruction file */
-  async setup() {
+  async setup(client = "other") {
     const existing = await this.repo.loadProgress();
-    const wrote = await this.repo.ensureClaudeMd();
-    await this.repo.ensureHooks();
+    const wrote = await this.repo.ensureClaudeMd(client);
+    const roleWrote = client === "snow-cli" ? await this.repo.ensureRoleMd(client) : false;
+    if (client === "claude") {
+      await this.repo.ensureHooks();
+    }
     await this.repo.ensureLocalStateIgnored();
     const lines = [];
     if (existing && (existing.status === "running" || existing.status === "finishing")) {
@@ -4245,6 +4314,12 @@ ${warns.join("\n")}` : msg;
     if (wrote) {
       const instructionPath = (await loadSetupInjectionManifest(this.repo.projectRoot())).claudeMd?.path ?? "AGENTS.md";
       lines.push(`${instructionPath} \u5DF2\u66F4\u65B0: \u6DFB\u52A0\u4E86\u5DE5\u4F5C\u6D41\u534F\u8BAE`);
+    }
+    if (roleWrote) {
+      lines.push("ROLE.md \u5DF2\u66F4\u65B0: \u4E0E AGENTS.md \u4FDD\u6301\u4E00\u81F4\uFF0C\u4F9B snow-cli \u4F7F\u7528");
+    }
+    if (client === "claude") {
+      lines.push(".claude/settings.json \u5DF2\u66F4\u65B0: \u6DFB\u52A0\u4E86 Claude Code Hooks");
     }
     lines.push("\u63CF\u8FF0\u4F60\u7684\u5F00\u53D1\u4EFB\u52A1\u5373\u53EF\u542F\u52A8\u5168\u81EA\u52A8\u5F00\u53D1");
     return lines.join("\n");
@@ -4684,6 +4759,7 @@ function formatBatch(items) {
 }
 
 // src/interfaces/stdin.ts
+var import_promises11 = require("readline/promises");
 function isTTY() {
   return process.stdin.isTTY === true;
 }
@@ -4706,11 +4782,40 @@ function readStdinIfPiped(timeout = 3e4) {
     });
   });
 }
+var CLIENT_OPTIONS = [
+  { key: "1", value: "claude", label: "Claude Code", detail: "\u751F\u6210 AGENTS.md + .claude/settings.json" },
+  { key: "2", value: "codex", label: "Codex", detail: "\u53EA\u751F\u6210 AGENTS.md" },
+  { key: "3", value: "cursor", label: "Cursor", detail: "\u53EA\u751F\u6210 AGENTS.md" },
+  { key: "4", value: "snow-cli", label: "snow-cli", detail: "\u751F\u6210 AGENTS.md + ROLE.md" },
+  { key: "5", value: "other", label: "Other", detail: "\u53EA\u751F\u6210 AGENTS.md" }
+];
+function resolveSetupClientChoice(answer) {
+  const trimmed = answer.trim();
+  const matched = CLIENT_OPTIONS.find((option) => option.key === trimmed);
+  return matched?.value ?? "other";
+}
+async function promptSetupClient() {
+  if (!isTTY()) return "other";
+  process.stdout.write([
+    "\u8BF7\u9009\u62E9\u76EE\u6807\u5BA2\u6237\u7AEF\uFF1A",
+    ...CLIENT_OPTIONS.map((option) => `${option.key}. ${option.label} - ${option.detail}`),
+    "\u76F4\u63A5\u56DE\u8F66\u9ED8\u8BA4\u9009\u62E9 5. Other",
+    ""
+  ].join("\n"));
+  const rl = (0, import_promises11.createInterface)({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await rl.question("\u9009\u62E9 [1-5]\uFF1A");
+    return resolveSetupClientChoice(answer);
+  } finally {
+    rl.close();
+  }
+}
 
 // src/interfaces/cli.ts
 var CLI = class {
-  constructor(service2) {
+  constructor(service2, deps = {}) {
     this.service = service2;
+    this.deps = deps;
   }
   async run(argv) {
     const args = argv.slice(2);
@@ -4734,13 +4839,14 @@ var CLI = class {
     switch (cmd) {
       case "init": {
         const force = rest.includes("--force");
-        const md = await readStdinIfPiped();
+        const md = await (this.deps.readStdinIfPiped ?? readStdinIfPiped)();
         let out;
         if (md.trim()) {
           const data = await s.init(md, force);
           out = `\u5DF2\u521D\u59CB\u5316\u5DE5\u4F5C\u6D41: ${data.name} (${data.tasks.length} \u4E2A\u4EFB\u52A1)`;
         } else {
-          out = await s.setup();
+          const client = await (this.deps.promptSetupClient ?? promptSetupClient)();
+          out = await s.setup(client);
         }
         return out + "\n\n\u63D0\u793A: \u5EFA\u8BAE\u5148\u901A\u8FC7 /plugin \u5B89\u88C5\u63D2\u4EF6 superpowers\u3001frontend-design\u3001feature-dev\u3001code-review\u3001context7\uFF0C\u672A\u5B89\u88C5\u5219\u5B50Agent\u65E0\u6CD5\u4F7F\u7528\u4E13\u4E1A\u6280\u80FD\uFF0C\u529F\u80FD\u4F1A\u964D\u7EA7";
       }
@@ -4774,7 +4880,7 @@ var CLI = class {
         } else if (rest.length > 1 && fileIdx < 0 && filesIdx < 0) {
           detail = rest.slice(1).join(" ");
         } else {
-          detail = await readStdinIfPiped();
+          detail = await (this.deps.readStdinIfPiped ?? readStdinIfPiped)();
         }
         return await s.checkpoint(id, detail.trim(), files);
       }
@@ -4798,7 +4904,7 @@ var CLI = class {
         } else if (rest.length > 1 && fileIdx < 0 && filesIdx < 0) {
           detail = rest.slice(1).join(" ");
         } else {
-          detail = await readStdinIfPiped();
+          detail = await (this.deps.readStdinIfPiped ?? readStdinIfPiped)();
         }
         return await s.adopt(id, detail.trim(), files);
       }
@@ -4831,7 +4937,7 @@ var CLI = class {
         return await s.rollback(id);
       }
       case "evolve": {
-        const text = await readStdinIfPiped();
+        const text = await (this.deps.readStdinIfPiped ?? readStdinIfPiped)();
         if (!text.trim()) throw new Error("\u9700\u8981\u901A\u8FC7 stdin \u4F20\u5165\u53CD\u601D\u7ED3\u679C");
         return await s.evolve(text.trim());
       }
@@ -4855,7 +4961,7 @@ var CLI = class {
   }
 };
 var USAGE = `\u7528\u6CD5: node flow.js [--verbose] <command>
-  init [--force]       \u521D\u59CB\u5316\u5DE5\u4F5C\u6D41 (stdin\u4F20\u5165\u4EFB\u52A1markdown\uFF0C\u65E0stdin\u5219\u63A5\u7BA1\u9879\u76EE)
+  init [--force]       \u521D\u59CB\u5316\u5DE5\u4F5C\u6D41 (stdin\u4F20\u5165\u4EFB\u52A1markdown\uFF0C\u65E0stdin\u5219\u663E\u793A\u5BA2\u6237\u7AEF\u9009\u9879\u5E76\u63A5\u7BA1\u9879\u76EE)
   next [--batch]       \u83B7\u53D6\u4E0B\u4E00\u4E2A\u5F85\u6267\u884C\u4EFB\u52A1 (--batch \u8FD4\u56DE\u6240\u6709\u53EF\u5E76\u884C\u4EFB\u52A1)
   checkpoint <id>      \u8BB0\u5F55\u4EFB\u52A1\u5B8C\u6210 [--file <path> | stdin | \u5185\u8054\u6587\u672C] [--files f1 f2 ...]
   adopt <id>           \u63A5\u7BA1\u4E2D\u65AD\u540E\u5F85\u63A5\u7BA1\u53D8\u66F4\u5E76\u8865 checkpoint [--file <path> | stdin | \u5185\u8054\u6587\u672C] [--files f1 f2 ...]

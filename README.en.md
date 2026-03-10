@@ -209,7 +209,13 @@ Also enable **Agent Teams** by adding to `~/.claude/settings.json`:
 }
 ```
 
-`node flow.js init` auto-generates the protocol and Hooks, and warns about missing plugins in the output.
+In setup mode, `node flow.js init` now shows direct client options:
+- `Claude Code`: generates `AGENTS.md` + `.claude/settings.json`
+- `Codex`: generates `AGENTS.md` with extra Codex-specific enhancement rules
+- `Cursor` / `Other`: generate the generic `AGENTS.md`
+- `snow-cli`: generates `AGENTS.md` + `ROLE.md` with identical content
+
+Missing plugins are still reported in the output.
 
 Setup/init changes to the instruction file (new projects default to `AGENTS.md`, existing `CLAUDE.md` projects remain compatible), `.claude/settings.json`, and `.gitignore` follow ownership-based cleanup: FlowPilot only removes what it created or injected, and `flow finish` refuses the final commit if user residue still remains afterward.
 
@@ -229,7 +235,7 @@ npm run test:run
 cp dist/flow.js /your/project/
 cd /your/project
 
-# Initialize (protocol embedded in AGENTS.md for new projects, CLAUDE.md remains supported for legacy repos + Hooks injected)
+# Initialize (shows client options; new projects default to AGENTS.md)
 node flow.js init
 
 # Launch CC in fully automated mode, describe your requirements, everything else is automatic

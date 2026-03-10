@@ -92,6 +92,7 @@ export interface GitignoreInjectionState {
 /** setup/init 阶段的精确注入 manifest */
 export interface SetupInjectionManifest {
   claudeMd?: ClaudeMdInjectionState;
+  roleMd?: ClaudeMdInjectionState;
   hooks?: HooksInjectionState;
   gitignore?: GitignoreInjectionState;
 }
@@ -227,6 +228,7 @@ function isGitignoreInjectionState(value: unknown): value is GitignoreInjectionS
 function isSetupInjectionManifest(value: unknown): value is SetupInjectionManifest {
   return isRecord(value)
     && (value.claudeMd === undefined || isClaudeMdInjectionState(value.claudeMd))
+    && (value.roleMd === undefined || isClaudeMdInjectionState(value.roleMd))
     && (value.hooks === undefined || isHooksInjectionState(value.hooks))
     && (value.gitignore === undefined || isGitignoreInjectionState(value.gitignore));
 }
@@ -278,6 +280,15 @@ function normalizeSetupInjectionManifest(manifest: SetupInjectionManifest): Setu
       block: manifest.claudeMd.block,
       ...(manifest.claudeMd.path !== undefined ? { path: manifest.claudeMd.path } : {}),
       ...(manifest.claudeMd.scaffold !== undefined ? { scaffold: manifest.claudeMd.scaffold } : {}),
+    };
+  }
+
+  if (manifest.roleMd) {
+    normalized.roleMd = {
+      created: manifest.roleMd.created,
+      block: manifest.roleMd.block,
+      ...(manifest.roleMd.path !== undefined ? { path: manifest.roleMd.path } : {}),
+      ...(manifest.roleMd.scaffold !== undefined ? { scaffold: manifest.roleMd.scaffold } : {}),
     };
   }
 
@@ -662,6 +673,7 @@ export async function mergeSetupInjectionManifest(
   const next = normalizeSetupInjectionManifest({
     ...current,
     ...(patch.claudeMd ? { claudeMd: patch.claudeMd } : {}),
+    ...(patch.roleMd ? { roleMd: patch.roleMd } : {}),
     ...(patch.gitignore ? { gitignore: patch.gitignore } : {}),
     ...(patch.hooks
       ? {

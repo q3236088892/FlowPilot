@@ -209,7 +209,13 @@ Finalization 阶段（可选）：
 }
 ```
 
-`node flow.js init` 会自动生成协议和 Hooks，缺失插件会在输出中提醒。
+`node flow.js init` 在接管模式下会直接显示客户端选项：
+- `Claude Code`：生成 `AGENTS.md` + `.claude/settings.json`
+- `Codex`：生成 `AGENTS.md`，并附加 Codex 平台增强规则（如多代理并行调度约定）
+- `Cursor` / `Other`：生成通用版 `AGENTS.md`
+- `snow-cli`：生成 `AGENTS.md` + `ROLE.md`（两者内容保持一致）
+
+缺失插件会在输出中提醒。
 
 setup/init 写入的 instruction file（新项目默认 `AGENTS.md`，兼容旧的 `CLAUDE.md`）、`.claude/settings.json`、`.gitignore` 遵循 ownership-based cleanup：FlowPilot 只清理自己创建或注入的部分，cleanup 后若仍有用户残留改动，`flow finish` 会拒绝最终提交。
 
@@ -229,7 +235,7 @@ npm run test:run
 cp dist/flow.js /your/project/
 cd /your/project
 
-# 初始化（协议嵌入 AGENTS.md，新项目默认；旧项目兼容 CLAUDE.md + Hooks 注入）
+# 初始化（显示客户端选项；新项目默认生成 AGENTS.md）
 node flow.js init
 
 # 全自动模式启动 CC，直接描述需求，剩下的全自动

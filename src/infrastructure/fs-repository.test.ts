@@ -126,6 +126,13 @@ describe('FsWorkflowRepository', () => {
     expect(existsSync(join(dir, 'AGENTS.md'))).toBe(false);
   });
 
+  it('ensureRoleMd 首次创建 ROLE.md', async () => {
+    const wrote = await repo.ensureRoleMd();
+    expect(wrote).toBe(true);
+    const content = await readFile(join(dir, 'ROLE.md'), 'utf-8');
+    expect(content).toContain('flowpilot:start');
+  });
+
   it('config 读写', async () => {
     expect(await repo.loadConfig()).toEqual({});
     await repo.saveConfig({ verify: { timeout: 60 } });
@@ -254,12 +261,14 @@ describe('FsWorkflowRepository', () => {
 
   it('cleanupInjections 删除由 FlowPilot 创建且无用户内容的文件', async () => {
     await repo.ensureClaudeMd();
+    await repo.ensureRoleMd();
     await repo.ensureHooks();
     await repo.ensureLocalStateIgnored();
 
     await repo.cleanupInjections();
 
     expect(existsSync(join(dir, 'AGENTS.md'))).toBe(false);
+    expect(existsSync(join(dir, 'ROLE.md'))).toBe(false);
     expect(existsSync(join(dir, '.claude', 'settings.json'))).toBe(false);
     expect(existsSync(join(dir, '.claude'))).toBe(false);
     expect(await readFile(join(dir, '.gitignore'), 'utf-8')).toBe(LOCAL_STATE_GITIGNORE);

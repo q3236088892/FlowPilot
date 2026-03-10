@@ -3,7 +3,7 @@
  * @description 工作流应用服务 - 11个用例
  */
 
-import type { ProgressData, TaskEntry, WorkflowStats } from '../domain/types';
+import type { ProgressData, SetupClient, TaskEntry, WorkflowStats } from '../domain/types';
 import type { WorkflowDefinition } from '../domain/workflow';
 import type { CommitResult, WorkflowRepository } from '../domain/repository';
 import { makeTaskId, cascadeSkip, findNextTask, findParallelTasks, completeTask, failTask, resumeProgress, isAllDone, reopenRollbackBranch } from '../domain/task-store';
@@ -217,7 +217,7 @@ export class WorkflowService {
     await clearReconcileState(this.repo.projectRoot());
     await saveDirtyBaseline(this.repo.projectRoot(), this.repo.listChangedFiles(), data.startTime);
     const setupOwnedFiles: string[] = [];
-    if (await this.repo.ensureClaudeMd()) {
+    if (await this.repo.ensureClaudeMd('other')) {
       setupOwnedFiles.push((await loadSetupInjectionManifest(this.repo.projectRoot())).claudeMd?.path ?? 'AGENTS.md');
     }
     if (await this.repo.ensureHooks()) setupOwnedFiles.push('.claude/settings.json');
@@ -714,10 +714,13 @@ export class WorkflowService {
   }
 
   /** setup: 项目接管模式 - 写入 instruction file */
-  async setup(): Promise<string> {
+  async setup(client: SetupClient = 'other'): Promise<string> {
     const existing = await this.repo.loadProgress();
-    const wrote = await this.repo.ensureClaudeMd();
-    await this.repo.ensureHooks();
+    const wrote = await this.repo.ensureClaudeMd(client);
+    const roleWrote = client === 'snow-cli' ? await this.repo.ensureRoleMd(client) : false;
+    if (client === 'claude') {
+      await this.repo.ensureHooks();
+    }
     await this.repo.ensureLocalStateIgnored();
     const lines: string[] = [];
 
@@ -739,6 +742,12 @@ export class WorkflowService {
     if (wrote) {
       const instructionPath = (await loadSetupInjectionManifest(this.repo.projectRoot())).claudeMd?.path ?? 'AGENTS.md';
       lines.push(`${instructionPath} 已更新: 添加了工作流协议`);
+    }
+    if (roleWrote) {
+      lines.push('ROLE.md 已更新: 与 AGENTS.md 保持一致，供 snow-cli 使用');
+    }
+    if (client === 'claude') {
+      lines.push('.claude/settings.json 已更新: 添加了 Claude Code Hooks');
     }
     lines.push('描述你的开发任务即可启动全自动开发');
     return lines.join('\n');

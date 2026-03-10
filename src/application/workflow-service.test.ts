@@ -508,6 +508,39 @@ describe('WorkflowService 集成测试', () => {
     expect(await readFile(join(dir, '.gitignore'), 'utf-8')).toBe(LOCAL_STATE_GITIGNORE);
   });
 
+  it('setup 选择 Claude Code 时会生成 hooks', async () => {
+    const msg = await svc.setup('claude');
+    expect(msg).toContain('.claude/settings.json 已更新');
+    expect(await readFile(join(dir, 'AGENTS.md'), 'utf-8')).toContain('flowpilot:start');
+    expect(await readFile(join(dir, '.claude', 'settings.json'), 'utf-8')).toContain('TaskCreate');
+  });
+
+  it('setup 选择 Codex 时不生成 .claude/settings.json', async () => {
+    await svc.setup('codex');
+    await expect(readFile(join(dir, '.claude', 'settings.json'), 'utf-8')).rejects.toThrow();
+    const content = await readFile(join(dir, 'AGENTS.md'), 'utf-8');
+    expect(content).toContain('flowpilot:start');
+    expect(content).toContain('multi_agent');
+    expect(content).toContain('50');
+  });
+
+  it('setup 选择 snow-cli 时额外生成 ROLE.md', async () => {
+    const msg = await svc.setup('snow-cli');
+    expect(msg).toContain('ROLE.md 已更新');
+    const agents = await readFile(join(dir, 'AGENTS.md'), 'utf-8');
+    const role = await readFile(join(dir, 'ROLE.md'), 'utf-8');
+    expect(agents).toContain('flowpilot:start');
+    expect(role).toContain('flowpilot:start');
+    expect(role).toBe(agents);
+    await expect(readFile(join(dir, '.claude', 'settings.json'), 'utf-8')).rejects.toThrow();
+  });
+
+  it('setup 选择 Other 时使用通用模板而不注入 codex 平台增强段', async () => {
+    await svc.setup('other');
+    const content = await readFile(join(dir, 'AGENTS.md'), 'utf-8');
+    expect(content).not.toContain('multi_agent');
+  });
+
   it('checkpoint提取[REMEMBER]标记写入永久记忆', async () => {
     await svc.init(TASKS_MD);
     await svc.next();

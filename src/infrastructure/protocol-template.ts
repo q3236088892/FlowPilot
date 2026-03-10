@@ -1,5 +1,45 @@
-/** 内置协议模板（内联，无需运行时读文件） */
-export const PROTOCOL_TEMPLATE = `<!-- flowpilot:start -->
+import type { SetupClient } from '../domain/types';
+
+const COMMON_AGENT_GUIDELINES = `
+## 通用工作规范
+
+### 语言规范
+- 默认使用简体中文沟通、解释与总结，除非用户明确要求其他语言。
+
+### 输出风格
+- 先给结论，再给必要细节。
+- 保持简洁、清晰、终端友好。
+- 优先使用短段落、短列表和明确标题，避免冗长铺陈。
+- 可适度使用 emoji 强化视觉引导，但不要堆砌。
+
+### 任务执行
+- 先分析，再执行。
+- 能并行就并行；只有存在真实依赖时才串行。
+- 并行任务必须避免写冲突；若存在同文件重叠修改，必须先拆清写入边界；在边界未拆清前，不得并行派发。
+- 高风险操作前必须说明影响范围、主要风险，并获得明确确认。
+
+### 工程质量
+- 优先正确性、可维护性与可验证性。
+- 关键变更要有测试、验证或明确证据支撑。
+- 重要决策与异常边界要可追溯。
+`;
+
+const CODEX_ENHANCED_GUIDELINES = `
+## Codex 平台增强规则
+
+### 并行代理调度
+- 当 Codex 平台提供 \`multi_agent\`、\`spawn_agent\` 或等效子代理能力时，**必须优先**使用它们做并行调度。
+- 目标是最大化安全并行度；在不存在真实依赖或写冲突时，不得因保守心态退回单代理串行。
+- 单轮最多可同时下发 **50 个**子任务；在平台能力、上下文容量和任务独立性允许时，应尽量打满可安全并行的子代理数量。
+- 若任务可独立且无写冲突，不得只派 1 个子代理；无故降为单代理视为吞吐退化。
+- 只有存在真实依赖、写冲突或整合压力时，才允许分批回退。
+
+### 子任务契约
+- 每个子任务必须明确：代理名称、任务定义、执行边界、预期结果。
+- 子任务间必须保持文件边界清晰；不得让多个子代理同时修改同一块代码。
+`;
+
+const FLOWPILOT_PROTOCOL_BODY = `
 ## FlowPilot Workflow Protocol (MANDATORY — any violation is a protocol failure)
 
 **You are the dispatcher. These rules have the HIGHEST priority and are ALWAYS active.**
@@ -103,5 +143,15 @@ echo '摘要 [REMEMBER] 关键发现 [DECISION] 技术决策' | node flow.js che
    - Tags: \`[CONFIG]\` for config changes, \`[PROTOCOL]\` for instruction-file protocol changes
 5. Run \`node flow.js finish\` again — verify passes + review done → final commit → idle.
 **Loop: finish(verify) → review(code-review) → evolve(AI反思) → fix → finish again. All gates must pass.**
+`;
 
+/** 内置协议模板（内联，无需运行时读文件） */
+export function getProtocolTemplate(client: SetupClient = 'other'): string {
+  const codexBlock = client === 'codex' ? `${CODEX_ENHANCED_GUIDELINES}\n` : '';
+  return `<!-- flowpilot:start -->
+${COMMON_AGENT_GUIDELINES}
+${codexBlock}${FLOWPILOT_PROTOCOL_BODY}
 <!-- flowpilot:end -->`;
+}
+
+export const PROTOCOL_TEMPLATE = getProtocolTemplate('other');
