@@ -148,7 +148,7 @@ Round 3: Polish → Code quality improvement → Final verification
 
 ### Self-Evolution — Each Round Makes the Next Smarter
 
-FlowPilot has a built-in three-phase organic evolution cycle. Both success and failure trigger evolution, with results written to `.flowpilot/config.json` and consumed by maxRetries / parallelLimit / hints / verify / hooks:
+FlowPilot has a built-in three-phase organic evolution cycle. Both success and failure trigger evolution, with results written to `.flowpilot/config.json` and consumed by maxRetries / hints / verify / hooks; `parallelLimit` remains a manual operator setting and is not rewritten by automatic evolution:
 
 ```
 finish() triggers:
@@ -173,11 +173,11 @@ Evolution results directly affect workflow behavior:
 | Parameter | Effect |
 |-----------|--------|
 | `maxRetries` | Determines retry count on checkpoint failure |
-| `parallelLimit` | Limits parallel task count in `nextBatch`; when unset FlowPilot does not artificially cap the batch, and `1` effectively forces serial execution |
+| `parallelLimit` | Limits parallel task count in `nextBatch`; when unset FlowPilot does not artificially cap the batch, and `1` effectively forces serial execution (manual-only, not evolution-managed) |
 | `hints` | Injected into sub-agent context as "evolution suggestions" |
 
-- On success: increase parallelism, optimize parameters
-- On failure: add pre-check suggestions, reduce parallelism
+- On success: optimize retries and experience hints
+- On failure: add pre-check suggestions and tune retries/verification
 - With `ANTHROPIC_API_KEY`: deep LLM analysis. Without: rule engine fallback — graceful degradation under zero-dependency constraints
 
 ### 99KB Does It All — Zero Dependencies, Copy and Use

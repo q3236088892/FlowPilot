@@ -1093,9 +1093,9 @@ describe('WorkflowService 集成测试', () => {
 
     expect(msg).toContain('进化摘要:');
     expect(msg).toContain('reflect: 已执行');
-    expect(msg).toContain('experiment: 已执行');
-    expect(msg).toContain('config变更: 是');
-    expect(msg).toContain('变更键: parallelLimit');
+    expect(msg).toContain('experiment: 未执行');
+    expect(msg).toContain('config变更: 否');
+    expect(msg).toContain('变更键: 无');
   });
 
   it('finish在无实验时也输出未执行和无配置变更', async () => {

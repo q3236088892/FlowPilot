@@ -423,7 +423,7 @@ echo '\u6458\u8981 [REMEMBER] \u5173\u952E\u53D1\u73B0 [DECISION] \u6280\u672F\u
    - Read \`.flowpilot/history/\` files to understand workflow stats
    - Read \`.flowpilot/evolution/\` files to see past experiments
    - Analyze: what went well, what could improve, config optimization opportunities
-   - Pipe structured findings into: \`echo '[CONFIG] \u5C06 parallelLimit \u63D0\u5347\u81F3 4\\n[PROTOCOL] \u5B50Agent\u5E94\u5148\u9A8C\u8BC1\u73AF\u5883\u518D\u7F16\u7801' | node flow.js evolve\`
+   - Pipe structured findings into: \`echo '[CONFIG] \u5C06 maxRetries \u63D0\u5347\u81F3 5\\n[PROTOCOL] \u5B50Agent\u5E94\u5148\u9A8C\u8BC1\u73AF\u5883\u518D\u7F16\u7801' | node flow.js evolve\`
    - Tags: \`[CONFIG]\` for config changes, \`[PROTOCOL]\` for CLAUDE.md protocol changes
 5. Run \`node flow.js finish\` again \u2014 verify passes + review done \u2192 final commit \u2192 idle.
 **Loop: finish(verify) \u2192 review(code-review) \u2192 evolve(AI\u53CD\u601D) \u2192 fix \u2192 finish again. All gates must pass.**
@@ -2182,13 +2182,7 @@ function fourDimensionAnalysis(stats) {
     const rate = (efficient.length / stats.totalTasks * 100).toFixed(0);
     findings.push(`[delight] ${efficient.length}/${stats.totalTasks} \u4EFB\u52A1\u4E00\u6B21\u901A\u8FC7 (${rate}%)`);
     if (efficient.length === stats.totalTasks && stats.totalTasks >= 3) {
-      experiments.push({
-        trigger: "\u5168\u90E8\u4E00\u6B21\u901A\u8FC7",
-        observation: `${stats.totalTasks} \u4E2A\u4EFB\u52A1\u96F6\u91CD\u8BD5`,
-        action: "\u5C06 parallelLimit \u63D0\u5347\u81F3 " + Math.min(stats.totalTasks, 5),
-        expected: "\u63D0\u9AD8\u5E76\u884C\u5EA6",
-        target: "config"
-      });
+      findings.push("[delight] \u541E\u5410\u7A33\u5B9A\uFF0C\u53EF\u7EE7\u7EED\u4FDD\u6301\u9AD8\u5E76\u884C\u4EBA\u5DE5\u914D\u7F6E");
     }
   }
   const retriedButDone = results.filter((r) => r.status === "done" && r.retries > 0);
@@ -2313,7 +2307,7 @@ function resolvePersistentConfigPath(basePath2) {
 function readSnapshotConfig(snapshot) {
   return snapshot.files[SNAPSHOT_CONFIG_KEY] ?? snapshot.files[LEGACY_SNAPSHOT_CONFIG_KEY] ?? null;
 }
-var KNOWN_PARAMS = ["maxRetries", "timeout", "parallelLimit", "verifyTimeout"];
+var KNOWN_PARAMS = ["maxRetries", "timeout", "verifyTimeout"];
 function parseConfigAction(action) {
   for (const k of KNOWN_PARAMS) {
     const re = new RegExp(k + "\\D*(\\d+)");
@@ -2321,7 +2315,6 @@ function parseConfigAction(action) {
     if (m) return { key: k, value: Number(m[1]) };
   }
   const CN_MAP = {
-    "\u5E76\u884C": "parallelLimit",
     "\u91CD\u8BD5": "maxRetries",
     "\u8D85\u65F6": "timeout",
     "\u9A8C\u8BC1\u8D85\u65F6": "verifyTimeout"

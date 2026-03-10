@@ -99,7 +99,7 @@ echo '摘要 [REMEMBER] 关键发现 [DECISION] 技术决策' | node flow.js che
    - Read \`.flowpilot/history/\` files to understand workflow stats
    - Read \`.flowpilot/evolution/\` files to see past experiments
    - Analyze: what went well, what could improve, config optimization opportunities
-   - Pipe structured findings into: \`echo '[CONFIG] 将 parallelLimit 提升至 4\\n[PROTOCOL] 子Agent应先验证环境再编码' | node flow.js evolve\`
+   - Pipe structured findings into: \`echo '[CONFIG] 将 maxRetries 提升至 5\\n[PROTOCOL] 子Agent应先验证环境再编码' | node flow.js evolve\`
    - Tags: \`[CONFIG]\` for config changes, \`[PROTOCOL]\` for CLAUDE.md protocol changes
 5. Run \`node flow.js finish\` again — verify passes + review done → final commit → idle.
 **Loop: finish(verify) → review(code-review) → evolve(AI反思) → fix → finish again. All gates must pass.**

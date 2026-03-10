@@ -148,7 +148,7 @@ CC 会自动：拆解任务 → 识别依赖 → 并行派发子Agent → 写代
 
 ### 自我进化 — 每跑一轮，下一轮更聪明
 
-FlowPilot 内置三阶段有机进化循环，成功和失败均触发进化，结果写入 `.flowpilot/config.json`，被 maxRetries / parallelLimit / hints / verify / hooks 真正消费：
+FlowPilot 内置三阶段有机进化循环，成功和失败均触发进化，结果写入 `.flowpilot/config.json`，被 maxRetries / hints / verify / hooks 真正消费；`parallelLimit` 保持为手动参数，不由自动进化改写：
 
 ```
 finish() 触发：
@@ -173,11 +173,11 @@ Finalization 阶段（可选）：
 | 参数 | 作用 |
 |------|------|
 | `maxRetries` | checkpoint 失败时决定重试次数 |
-| `parallelLimit` | `nextBatch` 限制并行任务数；未设置时不做人为封顶，设为 `1` 基本等于强制串行 |
+| `parallelLimit` | `nextBatch` 限制并行任务数；未设置时不做人为封顶，设为 `1` 基本等于强制串行（仅手动配置，不由自动进化改写） |
 | `hints` | 注入到子Agent上下文作为"进化建议" |
 
-- 成功时：提升并行度，优化参数
-- 失败时：增加前置检查建议，降低并行度
+- 成功时：优化重试与经验规则
+- 失败时：增加前置检查建议，优化重试与验证策略
 - 有 `ANTHROPIC_API_KEY` 时用 LLM 深度分析，没有则用规则引擎——零依赖约束下的优雅降级
 
 ### 99KB 通吃一切 — 零依赖，复制即用
