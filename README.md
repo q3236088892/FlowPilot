@@ -535,6 +535,7 @@ Copyright (c) 2025-2026 FlowPilot Contributors
 欢迎加入 `FlowPilot交流` QQ 群交流使用问题、工作流实践和改进建议。
 
 - 群号：`760311090`
+- 群主 QQ：`879360806`
 
 ![FlowPilot QQ 群二维码](docs/qq_qr.png)
 
