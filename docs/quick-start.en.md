@@ -50,6 +50,7 @@ cp FlowPilot-directory/dist/flow.js  your-project/
 cd your-project
 node flow.js init
 # Ensures .workflow/, .flowpilot/, .claude/settings.json, and .claude/worktrees/ are added to .gitignore when missing
+# Choosing Claude Code creates CLAUDE.md by default on first setup; Codex / Cursor / Other default to AGENTS.md
 
 # 3. Launch your client and describe your requirements
 claude --dangerously-skip-permissions
@@ -57,6 +58,8 @@ claude --dangerously-skip-permissions
 # Codex can be started with:
 codex --yolo
 ```
+
+> The more Claude-like output upgrade only changes wording and layout. It does not change task scheduling, protocol priority, command semantics, or checkpoint rules.
 
 > `--dangerously-skip-permissions` skips all permission prompts for truly unattended operation. Without it, every action requires your confirmation.
 
@@ -109,9 +112,10 @@ Once inside, say "continue task" and it will automatically resume from the break
 
 If the worktree still has unarchived changes, `resume` now tells the truth about what survived:
 - baseline unarchived changes that already existed before the workflow started and are still present
-- pending task-owned changes left behind by interrupted tasks
-- if pending task-owned changes exist, the workflow enters `reconciling` and requires `adopt` or restart after handling only the listed task-owned changes
-- when the dirty baseline is missing, an explicit warning that FlowPilot cannot prove this is a clean restart
+- explicitly owned task changes that can be adopted as residue
+- workflow-period additions with ambiguous ownership, which may include manual user edits/deletions and will not be auto-restored by FlowPilot
+- if pending worktree changes exist, the workflow enters `reconciling` and requires `adopt` or restart after handling only the listed task-owned changes
+- when the dirty baseline is missing, an explicit warning that FlowPilot cannot prove this is a clean restart or distinguish user changes from task residue
 
 To pick from conversation history:
 ```bash
@@ -154,6 +158,17 @@ node flow.js status
 ```
 
 Or just ask CC: "How's the progress?"
+
+`status` now emphasizes what a human wants to know first:
+- what is already done
+- what is actively running
+- what is blocked
+- what the next step is
+
+When sub-agents continuously report their stage, the status output can also show richer live cards such as:
+- `Analyzing / Implementing / Verifying / Blocked`
+- last activity time
+- a short recent progress note
 
 ## When finish refuses the final commit
 
@@ -213,8 +228,9 @@ If you no longer want FlowPilot in a project, remove the files it copied in or g
 
 - `flow.js` (the single-file tool you copied into the project)
 - the instruction file:
-  - usually `AGENTS.md` for new projects
-  - possibly `CLAUDE.md` for legacy-compatible setups
+  - usually `CLAUDE.md` in `Claude Code` mode
+  - usually `AGENTS.md` in `Codex / Cursor / Other` mode
+  - the existing instruction file is reused for legacy-compatible setups
   - `ROLE.md` as well in `snow-cli` mode
 - `.claude/settings.json` (if FlowPilot generated it in `Claude Code` mode)
 - `.workflow/` (local transient runtime state)

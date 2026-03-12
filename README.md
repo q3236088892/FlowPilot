@@ -9,7 +9,8 @@
 
 > 新增说明：现已兼容 `Claude Code`、`Codex`、`Cursor`、`snow-cli` 和其他客户端；`init` 时可直接选择目标客户端并生成对应的 instruction file / 配置。
 
-> 新增说明：内置 `AGENTS.md` / 客户端增强模板现已将**输出风格作为硬约束**，要求回答遵循：**先结论、后细节、简洁直给、终端友好**；同时补强了依赖分析、并行调度、危险操作确认等执行约束。
+> 新增说明：内置 instruction file / 客户端增强模板现已将**输出风格作为硬约束**，要求回答遵循：**先结论、后细节、简洁直给、终端友好**；同时补强了依赖分析、并行调度、危险操作确认等执行约束，FlowPilot 自己的终端输出也会强化分组、状态图标与下一步提示。
+> 这次升级只改**表现层**：更友好的话术、更清晰的分组、更直观的终端排版；**不会**改动工作流调度、协议流程优先级、命令语义或 checkpoint 规则。
 
 > 多客户端全自动并行开关：
 > - `Claude Code`：开启 Agent Teams
@@ -37,7 +38,7 @@ claude --dangerously-skip-permissions
 ```
 
 初始化时会直接显示客户端选项：
-- `Claude Code`：生成 `AGENTS.md` + `.claude/settings.json`
+- `Claude Code`：生成 `CLAUDE.md` + `.claude/settings.json`
 - `Codex`：生成 `AGENTS.md`，并附加 Codex 平台增强规则（并行调度 + 子任务契约）
 - `Cursor` / `Other`：生成通用版 `AGENTS.md`
 - `snow-cli`：生成 `AGENTS.md` + `ROLE.md`
@@ -73,6 +74,16 @@ codex --yolo
 | 循环检测 | 100% | 重复失败/乒乓/全局熔断三策略 + FNV-1a 哈希 + 警告注入（独创） |
 | 历史进化 | 100% | 三阶段循环（Reflect→Experiment→Review）、心跳自检、预快照回滚、协议自修改、活跃时间窗口 |
 | 知识提取 | 95% | LLM + 规则引擎双路径、标签提取、决策模式匹配、30+ 技术栈检测 |
+
+---
+
+🔥 **子代理执行可视化增强** — 协议层新增子代理进度上报机制（建议每 30 秒更新 phase），formatter 实时显示任务激活时长（⏱️ X分X秒），超过 5 分钟显示超时预警（⚠️ 超时）
+
+🔥 **Codex 并发上限调整为 50** — 通过分析 Codex CLI 源码，发现默认并发上限为 6，需在 `~/.codex/config.toml` 中配置：
+  ```toml
+  [agents]
+  max_threads = 50
+  ```
 
 ---
 
@@ -152,6 +163,8 @@ node flow.js init
 
 CC 会自动：拆解任务 → 识别依赖 → 并行派发子Agent → 写代码 → checkpoint → git commit → 跑 build/test/lint → 全部完成。
 
+`flow finish` 现在会真正执行自动验证，而不是停留在“尽力探测”。如果当前工作流根目录本身没有可检测脚本，但只包含一个可识别子项目（例如 `FlowPilot/`），它会自动进入该子项目执行验证命令；对 `vitest` 测试脚本也会自动补成 `--run`，避免 finish 卡在 watch 模式。
+
 ## 核心优势
 
 ### 无限上下文 — 做 100 个任务也不会 compact 丢失
@@ -183,10 +196,10 @@ CC 会自动：拆解任务 → 识别依赖 → 并行派发子Agent → 写代
 ```
 新窗口 → 说：继续任务 → flow resume
   ├─ 若无待接管变更：重置未完成任务 → 继续
-  └─ 若有待接管变更：暂停调度 → adopt / 确认并处理列出的本任务变更后 restart → 再继续
+  └─ 若有待处理变更：暂停调度 → adopt / 确认并处理列出的本任务变更后 restart → 再继续
 ```
 
-所有状态持久化在文件里，不依赖对话历史。哪怕并行执行中 3 个子Agent 同时中断，恢复后也不会盲目重派；若检测到中断后待接管变更，必须先接管，或只处理列出的本任务变更后 restart，再继续下一个任务。
+所有状态持久化在文件里，不依赖对话历史。哪怕并行执行中 3 个子Agent 同时中断，恢复后也不会盲目重派；若检测到工作流期间新增但归属未明的变更，FlowPilot 会暂停并要求人工确认，而不是暗示你整文件 `git restore`。只有列出的 task-owned 变更才适合 `adopt` 或在处理后 `restart`。
 
 ### 迭代审查 — 跑完一轮再来一轮，越改越好
 
@@ -219,6 +232,24 @@ Finalization 阶段（可选）：
 | Reflect | finish 末尾 | LLM 或规则分析工作流统计，输出 findings + experiments |
 | Experiment | finish 末尾 | 自动调整 config 参数和协议模板，保存完整快照 |
 | Review | review 时 | 对比进化前后指标，恶化自动回滚，检查配置完整性 |
+
+### 收尾总结 — 清目录前先把结果说清楚
+
+`flow finish` 在删除临时工作流目录前，会先完成两件事：
+
+1. 在终端输出本轮工作流最终总结
+2. 在 `.workflow/final-summary.md` 落一份同样的总结，然后再执行清理
+
+总结会列出所有任务，并用下面的标记显示状态：
+
+```text
+[x] 已完成
+[-] 已跳过
+[!] 已失败
+[ ] 未完成
+```
+
+这样用户在 `.workflow/` 被清掉之前，就已经能在终端看见完整结果；同时流程内也可以验证“先总结、后清理”的顺序。需要注意的是：未执行 `flow review` 时，`flow finish` 不会结束工作流；即使 `review` 已完成，也只有最终 commit 真正成功后才会清理 `.workflow/` 并回到 idle。若 `review` 已完成但当前没有待提交文件，FlowPilot 会补一个显式最终收尾提交，以保持“只有 committed 才能结束工作流”的严格语义。
 
 进化结果直接影响工作流行为：
 
@@ -266,6 +297,9 @@ Finalization 阶段（可选）：
 - `Codex`
   - 在 `~/.codex/config.toml` 中加入：
     ```toml
+    [agents]
+    max_threads = 50          # 子代理并发上限，默认 6
+    
     [features]
     multi_agent = true
     ```
@@ -277,14 +311,14 @@ Finalization 阶段（可选）：
   - 没有统一标准，请先按各自文档自测多代理 / 自动运行能力
 
 `node flow.js init` 在接管模式下会直接显示客户端选项：
-- `Claude Code`：生成 `AGENTS.md` + `.claude/settings.json`
+- `Claude Code`：生成 `CLAUDE.md` + `.claude/settings.json`
 - `Codex`：生成 `AGENTS.md`，并附加 Codex 平台增强规则（如多代理并行调度约定）
 - `Cursor` / `Other`：生成通用版 `AGENTS.md`
 - `snow-cli`：生成 `AGENTS.md` + `ROLE.md`（两者内容保持一致）
 
 缺失插件会在输出中提醒。
 
-setup/init 写入的 instruction file（新项目默认 `AGENTS.md`，兼容旧的 `CLAUDE.md`）、`.claude/settings.json`、`.gitignore` 遵循 ownership-based cleanup：FlowPilot 只清理自己创建或注入的部分，cleanup 后若仍有用户残留改动，`flow finish` 会拒绝最终提交。
+setup/init 写入的 instruction file（`Claude Code` 默认 `CLAUDE.md`，`Codex / Cursor / Other` 默认 `AGENTS.md`，旧项目继续兼容已有文件）、`.claude/settings.json`、`.gitignore` 遵循 ownership-based cleanup：FlowPilot 只清理自己创建或注入的部分，不会自动恢复你的手动改动；cleanup 后若仍有真正的用户残留改动，`flow finish` 会停在 `finishing` 并提示你人工处理，而不是把这些用户改动误判成可自动清理的 workflow residue。
 
 默认情况下，FlowPilot 还会在项目 `.gitignore` 中确保以下本地状态被忽略：`.workflow/`（本地临时运行态）、`.flowpilot/`（本地持久化产品状态）、`.claude/settings.json`（本地集成配置）、`.claude/worktrees/`（本地工作树目录）。不会忽略整个 `.claude/` 目录。
 
@@ -302,7 +336,7 @@ npm run test:run
 cp dist/flow.js /your/project/
 cd /your/project
 
-# 初始化（显示客户端选项；新项目默认生成 AGENTS.md）
+# 初始化（显示客户端选项；按客户端生成对应 instruction file）
 node flow.js init
 
 # 全自动模式启动 CC，直接描述需求，剩下的全自动
@@ -317,7 +351,7 @@ claude --dangerously-skip-permissions --continue   # 接续最近一次对话
 claude --dangerously-skip-permissions --resume     # 从历史对话列表选择
 ```
 
-如果恢复时工作区仍然有未归档变更，`resume` 会明确告诉你哪些是启动前就存在的 baseline 未归档变更，哪些是中断后待接管的新变更；如果 dirty baseline 缺失，也会直接说明“无法证明这是干净重启”。
+如果恢复时工作区仍然有未归档变更，`resume` 会明确告诉你哪些是启动前就存在的 baseline 未归档变更，哪些是由显式 ownership 支撑的 task-owned 变更，哪些是工作流期间新增但归属未明的变更（可能包含你的手动修改/删除）；如果 dirty baseline 缺失，也会直接说明“无法证明这是干净重启，也无法可靠区分用户操作与任务残留”。
 
 ## 架构概览
 
@@ -411,7 +445,7 @@ node flow.js next [--batch]       # 获取下一个/所有可并行任务
 node flow.js checkpoint <id>      # 记录任务完成（stdin/--file/内联）[--files f1 f2 ...]
 node flow.js skip <id>            # 手动跳过任务
 node flow.js review               # 标记code-review已完成 + 进化自愈检查
-node flow.js finish               # 智能收尾（验证+总结+边界安全时才最终提交，需先review）
+node flow.js finish               # 智能收尾（验证+总结；未review或最终commit未成功时不会结束工作流）
 node flow.js status               # 查看全局进度
 node flow.js resume               # 中断恢复
 node flow.js add <描述> [--type]  # 追加任务（frontend/backend/general）
@@ -428,7 +462,7 @@ node flow.js evolve               # 接收 CC sub-agent 反思结果并应用进
 ```
 node flow.js init
        ↓
-  协议嵌入 instruction file（新项目默认 AGENTS.md，旧项目兼容 CLAUDE.md）+ 按客户端选择注入额外配置
+  协议嵌入 instruction file（`Claude Code` 默认 `CLAUDE.md`，`Codex / Cursor / Other` 默认 `AGENTS.md`，旧项目兼容原有文件）+ 按客户端选择注入额外配置
        ↓
   用户描述需求 / 丢入开发文档
        ↓                          ← 以下全自动，无需人工介入
@@ -446,16 +480,16 @@ node flow.js init
                    ↓
               flow evolve（可选，CC 深度反思）
                    ↓
-              flow finish ──→ 验证通过 → 最终提交 → idle
+              flow finish ──→ 验证通过 + final commit 成功 → idle
 ```
 
 ## 错误处理
 
 - **任务失败** — 自动重试 3 次，3 次仍失败则标记 `failed` 并跳过
 - **级联跳过** — 依赖了失败任务的后续任务自动标记 `skipped`
-- **中断恢复** — `active` 状态的任务在干净场景下会重置为 `pending`；若检测到中断后待接管变更，工作流进入 `reconciling`，必须先 `adopt`，或仅在确认并处理列出的本任务变更后 `restart`，不能直接继续派发后续任务
+- **中断恢复** — `active` 状态的任务在干净场景下会重置为 `pending`；若检测到工作流期间新增的未处理变更，工作流进入 `reconciling`。只有列出的 task-owned 变更适合 `adopt` / `restart`；归属未明的文件必须先人工确认，不能整文件 `git restore`
 - **验证失败** — `flow finish` 报错后可派子Agent修复，再次 finish
-- **最终提交拒绝** — `flow finish` 在 verify/review 之后还会检查 dirty baseline、checkpoint owned files、以及 instruction file（`AGENTS.md` / 兼容旧 `CLAUDE.md`）、`.claude/settings.json` / `.gitignore` 的 cleanup 结果；只要边界不安全，就拒绝最终提交并列出文件
+- **最终提交拒绝** — `flow finish` 在 verify/review 之后还会检查 dirty baseline、checkpoint owned files、以及 instruction file（`AGENTS.md` / 兼容旧 `CLAUDE.md`）、`.claude/settings.json` / `.gitignore` 的 cleanup 结果；只要边界不安全，或最终 commit 没真正成功，就拒绝结束工作流并列出下一步处理信息。用户手动改动应被视为 user-owned/baseline，不会被 FlowPilot 自动恢复，也不应被误判为 task residue
 - **循环检测** — 三策略防护（重复失败/乒乓/全局熔断），自动注入警告到下一任务
 - **心跳自检** — 活跃任务超时（>30分钟）告警，记忆膨胀（>100条）自动压缩
 - **进化回滚** — 实验导致指标恶化时，`review` 自动回滚到实验前快照
@@ -545,8 +579,9 @@ Copyright (c) 2025-2026 FlowPilot Contributors
 
 - `flow.js`（你复制进项目的单文件工具）
 - instruction file：
-  - 新项目通常是 `AGENTS.md`
-  - 兼容旧项目时可能是 `CLAUDE.md`
+  - `Claude Code` 模式通常是 `CLAUDE.md`
+  - `Codex / Cursor / Other` 模式通常是 `AGENTS.md`
+  - 兼容旧项目时会继续复用原有 instruction file
   - `snow-cli` 模式下还可能有 `ROLE.md`
 - `.claude/settings.json`（如果是 FlowPilot 在 `Claude Code` 模式下生成的）
 - `.workflow/`（本地临时运行态）

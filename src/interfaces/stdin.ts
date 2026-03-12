@@ -24,7 +24,7 @@ export function readStdinIfPiped(timeout = 30_000): Promise<string> {
 }
 
 const CLIENT_OPTIONS: Array<{ key: string; value: SetupClient; label: string; detail: string }> = [
-  { key: '1', value: 'claude', label: 'Claude Code', detail: '生成 AGENTS.md + .claude/settings.json' },
+  { key: '1', value: 'claude', label: 'Claude Code', detail: '默认生成 CLAUDE.md + .claude/settings.json' },
   { key: '2', value: 'codex', label: 'Codex', detail: '只生成 AGENTS.md' },
   { key: '3', value: 'cursor', label: 'Cursor', detail: '只生成 AGENTS.md' },
   { key: '4', value: 'snow-cli', label: 'snow-cli', detail: '生成 AGENTS.md + ROLE.md' },
@@ -41,9 +41,14 @@ export async function promptSetupClient(): Promise<SetupClient> {
   if (!isTTY()) return 'other';
 
   process.stdout.write([
-    '请选择目标客户端：',
+    '**客户端选择**',
+    '请选择目标客户端。这里的选择只影响生成说明文件与客户端配置，不会改变 FlowPilot 的协议优先级和调度规则。',
     ...CLIENT_OPTIONS.map(option => `${option.key}. ${option.label} - ${option.detail}`),
-    '直接回车默认选择 5. Other',
+    '',
+    '**提示**',
+    '- Claude Code 默认生成 CLAUDE.md',
+    '- Codex / Cursor / Other 默认生成 AGENTS.md',
+    '- 直接回车默认选择 5. Other',
     '',
   ].join('\n'));
 

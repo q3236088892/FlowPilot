@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// FLOWPILOT_VERSION: 0.3.6
 "use strict";
 
 // src/infrastructure/fs-repository.ts
@@ -261,7 +262,13 @@ function detectNoTestsReason(output) {
 }
 function normalizeCommands(cwd, commands) {
   const testScript = loadPackageScripts(cwd).test;
-  return commands.map((command) => shouldForceVitestRun(command, testScript) ? "npm run test -- --run" : command);
+  return commands.map((command) => {
+    if (shouldForceVitestRun(command, testScript)) return "npm run test -- --run";
+    const nested = matchNestedNpmTestCommand(command);
+    if (!nested) return command;
+    const nestedTestScript = loadPackageScripts((0, import_node_path2.join)(cwd, nested.dir)).test;
+    return shouldForceVitestRun("npm run test", nestedTestScript) ? `cd ${nested.dir} && npm run test -- --run` : command;
+  });
 }
 function loadPackageScripts(cwd) {
   try {
@@ -281,14 +288,44 @@ function shouldForceVitestRun(command, testScript) {
   if (!/\bvitest\b/.test(normalizedScript)) return false;
   return !/\bvitest\b.*(?:\s|^)(?:run\b|--run\b)/.test(normalizedScript);
 }
+function matchNestedNpmTestCommand(command) {
+  const match = /^cd\s+(.+?)\s+&&\s+npm run test$/.exec(command.trim());
+  return match ? { dir: match[1] } : null;
+}
+function detectNodeCommands(projectDir) {
+  try {
+    const s = JSON.parse((0, import_node_fs2.readFileSync)((0, import_node_path2.join)(projectDir, "package.json"), "utf-8")).scripts || {};
+    return ["build", "test", "lint"].filter((k) => k in s).map((k) => `npm run ${k}`);
+  } catch {
+    return [];
+  }
+}
+function detectNestedProjectCommands(cwd) {
+  const children = (0, import_node_fs2.readdirSync)(cwd, { withFileTypes: true }).filter((entry) => entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== "node_modules");
+  const candidates = [];
+  for (const child of children) {
+    const childDir = (0, import_node_path2.join)(cwd, child.name);
+    if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(childDir, "package.json"))) {
+      const commands = detectNodeCommands(childDir);
+      if (commands.length) candidates.push({ cwd: child.name, commands });
+      continue;
+    }
+    if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(childDir, "Cargo.toml"))) {
+      candidates.push({ cwd: child.name, commands: ["cargo build", "cargo test"] });
+      continue;
+    }
+    if ((0, import_node_fs2.existsSync)((0, import_node_path2.join)(childDir, "go.mod"))) {
+      candidates.push({ cwd: child.name, commands: ["go build ./...", "go test ./..."] });
+    }
+  }
+  if (candidates.length !== 1) return [];
+  return candidates[0].commands.map((command) => `cd ${candidates[0].cwd} && ${command}`);
+}
 function detectCommands(cwd) {
   const has = (f) => (0, import_node_fs2.existsSync)((0, import_node_path2.join)(cwd, f));
   if (has("package.json")) {
-    try {
-      const s = JSON.parse((0, import_node_fs2.readFileSync)((0, import_node_path2.join)(cwd, "package.json"), "utf-8")).scripts || {};
-      return ["build", "test", "lint"].filter((k) => k in s).map((k) => `npm run ${k}`);
-    } catch {
-    }
+    const commands = detectNodeCommands(cwd);
+    if (commands.length) return commands;
   }
   if (has("Cargo.toml")) return ["cargo build", "cargo test"];
   if (has("go.mod")) return ["go build ./...", "go test ./..."];
@@ -319,6 +356,8 @@ function detectCommands(cwd) {
     } catch {
     }
   }
+  const nested = detectNestedProjectCommands(cwd);
+  if (nested.length) return nested;
   return [];
 }
 
@@ -347,6 +386,33 @@ var COMMON_AGENT_GUIDELINES = `
 - **\u907F\u514D**\u4F7F\u7528\u8D85\u957F\u8868\u683C\u3001\u8D85\u957F\u6BB5\u843D\u3001\u8D85\u957F\u8DEF\u5F84\u548C\u5927\u6BB5\u65E0\u7ED3\u6784\u6587\u672C\u3002
 - **\u53EF\u9002\u5EA6**\u4F7F\u7528 emoji \u5F3A\u5316\u89C6\u89C9\u5F15\u5BFC\uFF0C\u4F46\u4E0D\u5F97\u5806\u780C\u6216\u5F71\u54CD\u53EF\u8BFB\u6027\u3002
 
+### AI \u5BF9\u7528\u6237\u8F93\u51FA\u98CE\u683C\uFF08\u53EA\u6539\u8868\u8FBE\uFF0C\u4E0D\u6539\u89C4\u5219\uFF09
+- **\u5FC5\u987B**\u4F18\u5148\u4F7F\u7528\u53CB\u597D\u3001\u76F4\u63A5\u3001\u50CF\u540C\u4F34\u534F\u4F5C\u7684\u8BED\u6C14\uFF1B\u4E0D\u8981\u50F5\u786C\u64AD\u62A5\u5F0F\u8F93\u51FA\u3002
+- **\u5FC5\u987B**\u4F18\u5148\u4F7F\u7528\u4EE5\u4E0B\u5206\u7EC4\u951A\u70B9\u7EC4\u7EC7\u7528\u6237\u53EF\u89C1\u56DE\u590D\uFF1A
+  - \`**\u7ED3\u8BBA**\`
+  - \`**\u5F53\u524D\u8FDB\u5C55**\`
+  - \`**\u539F\u56E0**\`
+  - \`**\u4E0B\u4E00\u6B65**\`
+  - \`**\u98CE\u9669**\`
+- **\u5EFA\u8BAE**\u5728\u4E0D\u5F71\u54CD\u53EF\u8BFB\u6027\u7684\u524D\u63D0\u4E0B\u4F7F\u7528\u5C11\u91CF\u6587\u5B57\u56FE\u6807\u6216 emoji \u5F3A\u5316\u626B\u63CF\u4F53\u9A8C\uFF0C\u4F8B\u5982\uFF1A
+  - \`\u5B8C\u6210\` / \`\u5DF2\u5904\u7406\`
+  - \`\u63D0\u793A\` / \`\u6CE8\u610F\`
+  - \`\u4E0B\u4E00\u6B65\`
+  - \`\u26A0\uFE0F\`\uFF08\u4EC5\u7528\u4E8E\u98CE\u9669\u6216\u963B\u585E\uFF09
+- **\u5FC5\u987B**\u8BA9\u72B6\u6001\u66F4\u65B0\u5C3D\u91CF\u7B26\u5408\u4EE5\u4E0B\u6837\u5F0F\uFF1A
+\`\`\`text
+**\u5F53\u524D\u8FDB\u5C55**
+\u5DF2\u5B8C\u6210 ...
+
+**\u539F\u56E0**
+\u73B0\u5728\u9700\u8981\u5148\u5904\u7406 ...
+
+**\u4E0B\u4E00\u6B65**
+\u63A5\u4E0B\u6765\u6211\u4F1A ...
+\`\`\`
+- **\u5FC5\u987B**\u4FDD\u6301\u534F\u8BAE\u6307\u4EE4\u3001\u547D\u4EE4\u3001checkpoint \u8981\u6C42\u7684\u539F\u610F\u4E0D\u53D8\uFF1B\u53EA\u80FD\u4F18\u5316\u8868\u8FBE\u548C\u6392\u7248\uFF0C\u4E0D\u80FD\u6539\u8BED\u4E49\u3002
+- **\u907F\u514D**\u201C\u53E3\u53F7\u5F0F\u5938\u8D5E\u201D\u201C\u8FC7\u5EA6\u9F13\u52B1\u201D\u201C\u7A7A\u6D1E\u5BA2\u5957\u201D\uFF1B\u53CB\u597D\u4E0D\u7B49\u4E8E\u5197\u957F\u3002
+
 ### \u4EFB\u52A1\u6267\u884C
 - **\u5FC5\u987B**\u5148\u5206\u6790\uFF0C\u518D\u6267\u884C\u3002
 - **\u5FC5\u987B**\u5148\u8BC6\u522B\u4F9D\u8D56\u5173\u7CFB\u56FE\uFF0C\u533A\u5206\u300C\u53EF\u5E76\u884C\u8282\u70B9\u300D\u4E0E\u300C\u5FC5\u987B\u4E32\u884C\u8282\u70B9\u300D\u3002
@@ -354,19 +420,6 @@ var COMMON_AGENT_GUIDELINES = `
 - \u5BF9\u4E8E\u53EF\u72EC\u7ACB\u6267\u884C\u4E14\u65E0\u51B2\u7A81\u7684\u4EFB\u52A1\uFF0C**\u4E0D\u5F97**\u65E0\u6545\u4FDD\u5B88\u4E32\u884C\u3002
 - \u5E76\u884C\u4EFB\u52A1**\u5FC5\u987B**\u907F\u514D\u5199\u51B2\u7A81\uFF1B\u82E5\u5B58\u5728\u540C\u6587\u4EF6\u91CD\u53E0\u4FEE\u6539\uFF0C**\u5FC5\u987B**\u5148\u62C6\u6E05\u5199\u5165\u8FB9\u754C\uFF1B\u5728\u8FB9\u754C\u672A\u62C6\u6E05\u524D\uFF0C**\u7981\u6B62\u5E76\u884C\u6D3E\u53D1**\u3002
 - \u9AD8\u98CE\u9669\u64CD\u4F5C\u524D**\u5FC5\u987B**\u8BF4\u660E\u5F71\u54CD\u8303\u56F4\u3001\u4E3B\u8981\u98CE\u9669\uFF0C\u5E76\u83B7\u5F97\u660E\u786E\u786E\u8BA4\u3002
-
-### \u5371\u9669\u64CD\u4F5C\u786E\u8BA4
-- \u6267\u884C\u5371\u9669\u64CD\u4F5C\u524D\uFF0C**\u5FC5\u987B**\u660E\u786E\uFF1A\u64CD\u4F5C\u7C7B\u578B\u3001\u5F71\u54CD\u8303\u56F4\u3001\u98CE\u9669\u8BC4\u4F30\u3002
-- \u4E0B\u5217\u64CD\u4F5C\u9ED8\u8BA4\u89C6\u4E3A\u9AD8\u98CE\u9669\uFF1A\u5220\u9664\u6587\u4EF6/\u76EE\u5F55\u3001\u6279\u91CF\u4FEE\u6539\u3001\u7CFB\u7EDF\u914D\u7F6E\u53D8\u66F4\u3001\u6743\u9650\u53D8\u66F4\u3001\u6570\u636E\u5E93\u7ED3\u6784\u6216\u6279\u91CF\u6570\u636E\u64CD\u4F5C\u3001\u53D1\u9001\u654F\u611F\u6570\u636E\u3001\u8C03\u7528\u751F\u4EA7\u73AF\u5883 API\u3001\u5168\u5C40\u5B89\u88C5/\u5378\u8F7D\u6216\u5347\u7EA7\u6838\u5FC3\u4F9D\u8D56\u3002
-- \u63A8\u8350\u4F7F\u7528\u4EE5\u4E0B\u786E\u8BA4\u683C\u5F0F\uFF1A
-\`\`\`text
-\u26A0\uFE0F \u5371\u9669\u64CD\u4F5C\u68C0\u6D4B
-\u64CD\u4F5C\u7C7B\u578B\uFF1A...
-\u5F71\u54CD\u8303\u56F4\uFF1A...
-\u98CE\u9669\u8BC4\u4F30\uFF1A...
-
-\u8BF7\u786E\u8BA4\u662F\u5426\u7EE7\u7EED\uFF1F\uFF08\u56DE\u590D\uFF1A\u662F / \u786E\u8BA4 / \u7EE7\u7EED\uFF09
-\`\`\`
 
 ### \u5DE5\u7A0B\u8D28\u91CF
 - **\u8D28\u91CF\u7B2C\u4E00**\uFF1A\u6B63\u786E\u6027\u3001\u53EF\u7EF4\u62A4\u6027\u4E0E\u53EF\u9A8C\u8BC1\u6027\u4E0D\u53EF\u59A5\u534F\u3002
@@ -428,7 +481,7 @@ var FLOWPILOT_PROTOCOL_BODY = `
 
 ### On Session Start
 Run \`node flow.js resume\`:
-- If unfinished workflow and resume reports **reconciling** / "\u5DF2\u6682\u505C\u7EE7\u7EED\u8C03\u5EA6" \u2192 do **NOT** enter Execution Loop. First run \`node flow.js adopt <id> --files ...\`, or after confirming and handling only the listed task-owned changes run \`node flow.js restart <id>\`. Never touch baseline changes or unrelated project code.
+- If unfinished workflow and resume reports **reconciling** / "\u5DF2\u6682\u505C\u7EE7\u7EED\u8C03\u5EA6" \u2192 do **NOT** enter Execution Loop. First run \`node flow.js adopt <id> --files ...\`, or after confirming and handling only the listed task-owned changes run \`node flow.js restart <id>\`. If resume also reports ownership-ambiguous files, stop and review manually; never use whole-file \`git restore\` on files that may include user edits/deletions. Never touch baseline changes or unrelated project code.
 - If unfinished workflow and no reconcile gate \u2192 enter **Execution Loop** (unless user is asking an unrelated question \u2014 handle it first via **Ad-hoc Dispatch**, then remind user the workflow is paused)
 - If no workflow \u2192 **judge the request**: reply directly for pure chitchat, use **Ad-hoc Dispatch** for one-off tasks, or enter **Requirement Decomposition** for multi-step development work. When in doubt, prefer the heavier path.
 
@@ -473,7 +526,7 @@ cat openspec/changes/<change-name>/tasks.md | node flow.js init
 OpenSpec checkbox format (\`- [ ] 1.1 Task\`) is auto-detected. Group N tasks depend on group N-1.
 
 ### Execution Loop
-1. Prefer running \`node flow.js next --batch\` when tasks are confirmed independent. **NOTE: this command will REFUSE to return tasks if any previous task is still \`active\`, or if the workflow is in \`reconciling\` state. In reconciling state you must adopt/restart/skip first, and restart may only follow handling of the listed task-owned changes. If write boundaries remain unclear, \`node flow.js next\` may be used for manual serialization.**
+1. Prefer running \`node flow.js next --batch\` when tasks are confirmed independent. **NOTE: this command will REFUSE to return tasks if any previous task is still \`active\`, or if the workflow is in \`reconciling\` state. In reconciling state you must adopt/restart/skip first, and restart may only follow handling of the listed task-owned changes. Ownership-ambiguous files must be reviewed manually; do not clear them with whole-file \`git restore\`. If write boundaries remain unclear, \`node flow.js next\` may be used for manual serialization.**
 2. When using batch output, the result already contains checkpoint commands per task. For **EVERY** task in batch, dispatch a sub-agent via Task tool. **ALL Task calls in one message.** Copy the ENTIRE task block (including checkpoint commands) into each sub-agent prompt verbatim. **If the batch contains N independent tasks, dispatch N sub-agents immediately; do not downshift to 1 for caution.**
 3. **After ALL sub-agents return**: run \`node flow.js status\`.
    - If any task is still \`active\` \u2192 sub-agent failed to checkpoint. Run fallback: \`echo 'summary from sub-agent output' | node flow.js checkpoint <id> --files file1 file2\`
@@ -484,7 +537,7 @@ OpenSpec checkbox format (\`- [ ] 1.1 Task\`) is auto-detected. Group N tasks de
 ### Mid-Workflow Commands
 - \`node flow.js skip <id>\` \u2014 skip a stuck/unnecessary task (avoid skipping active tasks with running sub-agents)
 - \`node flow.js adopt <id> --files ...\` \u2014 adopt interrupted task-owned changes as the task result and unblock scheduling
-- \`node flow.js restart <id>\` \u2014 after confirming and handling only the listed task-owned changes, allow the task to be re-run from scratch; never touch baseline changes or unrelated code
+- \`node flow.js restart <id>\` \u2014 after confirming and handling only the listed task-owned changes, allow the task to be re-run from scratch; ownership-ambiguous files must be reviewed manually, and whole-file \`git restore\` is forbidden when user edits/deletions may be mixed in
 - \`node flow.js add <\u63CF\u8FF0> [--type frontend|backend|general]\` \u2014 inject a new task mid-workflow
 
 ### Sub-Agent Prompt Template
@@ -493,6 +546,28 @@ Each sub-agent prompt MUST contain these sections in order:
 2. **Pre-analysis (MANDATORY)**: Before writing ANY code, **MUST** invoke /superpowers:brainstorming to perform multi-dimensional analysis (requirements, edge cases, architecture, risks). Skipping = protocol failure.
 3. **Skill routing**: type=frontend \u2192 **MUST** invoke /frontend-design, type=backend \u2192 **MUST** invoke /feature-dev, type=general \u2192 execute directly. **For ALL types, you MUST also check available skills and MCP tools; use any that match the task alongside the primary skill.**
 4. **Unfamiliar APIs \u2192 MUST query context7 MCP first. Never guess.**
+
+### Sub-Agent Live Progress
+- \u5B50\u4EE3\u7406\u5728\u957F\u4EFB\u52A1\u4E2D**\u5FC5\u987B**\u6301\u7EED\u6C47\u62A5\u9636\u6BB5\u6027\u8FDB\u5C55\uFF0C\u800C\u4E0D\u662F\u53EA\u5728\u6700\u7EC8 checkpoint \u65F6\u56DE\u590D\u3002
+- \u63A8\u8350\u81F3\u5C11\u8986\u76D6\u4EE5\u4E0B\u9636\u6BB5\uFF1A
+  - \`analysis\`\uFF1A\u6B63\u5728\u9605\u8BFB\u4EE3\u7801 / \u6587\u6863 / \u5B9A\u4F4D\u95EE\u9898
+  - \`implementation\`\uFF1A\u6B63\u5728\u4FEE\u6539\u5B9E\u73B0
+  - \`verification\`\uFF1A\u6B63\u5728\u8FD0\u884C\u6D4B\u8BD5 / build / smoke
+  - \`blocked\`\uFF1A\u9047\u5230\u5361\u70B9\u3001\u73AF\u5883\u95EE\u9898\u6216\u8FB9\u754C\u4E0D\u6E05
+- \u82E5\u5E73\u53F0\u6216 CLI \u63D0\u4F9B\u8FDB\u5EA6\u4E0A\u62A5\u547D\u4EE4\uFF08\u4F8B\u5982 \`node flow.js pulse ...\`\uFF09\uFF0C**\u5FC5\u987B\u4F18\u5148**\u4F7F\u7528\uFF1B\u5426\u5219\u81F3\u5C11\u5728\u56DE\u590D\u4E2D\u660E\u786E\u9636\u6BB5\u3001\u6700\u8FD1\u6D3B\u52A8\u548C\u963B\u585E\u539F\u56E0\u3002
+- \u82E5\u5355\u4E2A\u9636\u6BB5\u6301\u7EED\u65F6\u95F4\u8FC7\u957F\u4E14\u65E0\u65B0 checkpoint\uFF0C\u5FC5\u987B\u4E3B\u52A8\u4E0A\u62A5\u201C\u4ECD\u5728\u6267\u884C\u201D\u6216\u201C\u5DF2\u963B\u585E\u201D\uFF0C\u907F\u514D\u4E3B\u4EE3\u7406\u53EA\u80FD\u770B\u5230\u7B49\u5F85\u9762\u677F\u3002
+- **\u5EFA\u8BAE**\u9636\u6BB5\u6027\u56DE\u590D\u5C3D\u91CF\u7B26\u5408\u4EE5\u4E0B\u683C\u5F0F\uFF1A
+\`\`\`text
+**\u5F53\u524D\u8FDB\u5C55**
+\u9636\u6BB5\uFF1Aimplementation
+\u6B63\u5728\u5904\u7406\uFF1A...
+
+**\u539F\u56E0**
+\u9700\u8981\u5148\u5B8C\u6210 ...
+
+**\u4E0B\u4E00\u6B65**
+\u5B8C\u6210\u540E\u6211\u4F1A ...
+\`\`\`
 
 ### Sub-Agent Checkpoint (Iron Rule #4 \u2014 most common violation)
 Sub-agent's LAST Bash command before replying MUST be:
@@ -549,6 +624,7 @@ var DIRTY_BASELINE_FILE = "dirty-baseline.json";
 var OWNED_FILES_FILE = "owned-files.json";
 var SETUP_OWNED_FILES_FILE = "setup-owned.json";
 var RECONCILE_STATE_FILE = "reconcile-state.json";
+var TASK_PULSES_FILE = "task-pulses.json";
 var INJECTIONS_FILE = "injections.json";
 var RUNTIME_PATH_PREFIXES = [".flowpilot/", ".workflow/"];
 var RUNTIME_FILES = /* @__PURE__ */ new Set([".claude/settings.json"]);
@@ -590,6 +666,15 @@ function isSetupOwnedState(value) {
 function isReconcileState(value) {
   return isRecord(value) && Array.isArray(value.taskIds);
 }
+function isTaskPulsePhase(value) {
+  return value === "analysis" || value === "implementation" || value === "verification" || value === "blocked";
+}
+function isTaskPulseStateEntry(value) {
+  return isRecord(value) && isTaskPulsePhase(value.phase) && isValidCreatedAt(value.updatedAt) && (value.note === void 0 || typeof value.note === "string");
+}
+function isTaskPulseState(value) {
+  return isRecord(value) && isRecord(value.byTask) && Object.values(value.byTask).every(isTaskPulseStateEntry);
+}
 function isHookEntry(value) {
   if (!isRecord(value) || typeof value.matcher !== "string" || !Array.isArray(value.hooks)) {
     return false;
@@ -621,6 +706,20 @@ function normalizeReconcileState(state) {
     taskIds: [...new Set(
       state.taskIds.filter((taskId) => typeof taskId === "string").map((taskId) => taskId.trim()).filter((taskId) => taskId.length > 0)
     )]
+  };
+}
+function normalizeTaskPulseState(state) {
+  return {
+    byTask: Object.fromEntries(
+      Object.entries(state.byTask).filter(([taskId]) => taskId.trim().length > 0).filter(([, entry]) => isTaskPulseStateEntry(entry)).map(([taskId, entry]) => [
+        taskId.trim(),
+        {
+          phase: entry.phase,
+          updatedAt: entry.updatedAt,
+          ...entry.note && entry.note.trim().length > 0 ? { note: entry.note.trim() } : {}
+        }
+      ])
+    )
   };
 }
 function normalizeOwnedFilesState(state) {
@@ -692,6 +791,18 @@ function compareDirtyFilesAgainstBaseline(currentFiles, baselineFiles) {
     currentFiles: normalizedCurrentFiles,
     preservedBaselineFiles: normalizedCurrentFiles.filter((file) => baselineSet.has(file)),
     newDirtyFiles: normalizedCurrentFiles.filter((file) => !baselineSet.has(file))
+  };
+}
+function classifyResumeDirtyFiles(currentFiles, baselineFiles, setupOwnedFiles, taskOwnedFiles) {
+  const comparison = compareDirtyFilesAgainstBaseline(currentFiles, baselineFiles ?? []);
+  const setupOwnedSet = new Set(normalizeDirtyFiles(setupOwnedFiles));
+  const taskOwnedSet = new Set(normalizeDirtyFiles(taskOwnedFiles));
+  const candidateFiles = (baselineFiles ? comparison.newDirtyFiles : comparison.currentFiles).filter((file) => !setupOwnedSet.has(file));
+  return {
+    currentFiles: comparison.currentFiles.filter((file) => !setupOwnedSet.has(file)),
+    preservedBaselineFiles: comparison.preservedBaselineFiles.filter((file) => !setupOwnedSet.has(file)),
+    taskOwnedResidueFiles: candidateFiles.filter((file) => taskOwnedSet.has(file)),
+    ambiguousFiles: candidateFiles.filter((file) => !taskOwnedSet.has(file))
   };
 }
 function getRuntimeLocalityToken() {
@@ -889,6 +1000,58 @@ async function loadSetupOwnedFiles(basePath2) {
     return { files: [] };
   }
 }
+async function loadTaskPulseState(basePath2) {
+  try {
+    const parsed = JSON.parse(await (0, import_promises.readFile)(runtimePath(basePath2, TASK_PULSES_FILE), "utf-8"));
+    if (!isTaskPulseState(parsed)) return { byTask: {} };
+    return normalizeTaskPulseState(parsed);
+  } catch {
+    return { byTask: {} };
+  }
+}
+async function saveTaskPulseState(basePath2, state) {
+  const normalized = normalizeTaskPulseState(state);
+  await (0, import_promises.mkdir)(runtimeDir(basePath2), { recursive: true });
+  const path = runtimePath(basePath2, TASK_PULSES_FILE);
+  await (0, import_promises.writeFile)(path + ".tmp", JSON.stringify(normalized, null, 2) + "\n", "utf-8");
+  await (0, import_promises.rename)(path + ".tmp", path);
+  return normalized;
+}
+async function recordTaskPulse(basePath2, taskId, entry) {
+  const current = await loadTaskPulseState(basePath2);
+  return saveTaskPulseState(basePath2, {
+    byTask: {
+      ...current.byTask,
+      [taskId]: {
+        phase: entry.phase,
+        updatedAt: entry.updatedAt,
+        ...entry.note && entry.note.trim().length > 0 ? { note: entry.note.trim() } : {}
+      }
+    }
+  });
+}
+async function clearTaskPulse(basePath2, taskId) {
+  const current = await loadTaskPulseState(basePath2);
+  if (!current.byTask[taskId]) return current;
+  const next = { ...current.byTask };
+  delete next[taskId];
+  return saveTaskPulseState(basePath2, { byTask: next });
+}
+function mergeTaskPulsesIntoProgress(data, pulseState) {
+  return {
+    ...data,
+    tasks: data.tasks.map((task) => {
+      const pulse = pulseState.byTask[task.id];
+      if (!pulse) return task;
+      return {
+        ...task,
+        phase: pulse.phase,
+        phaseUpdatedAt: pulse.updatedAt,
+        ...pulse.note ? { phaseNote: pulse.note } : {}
+      };
+    })
+  };
+}
 async function saveSetupOwnedFiles(basePath2, files) {
   const next = normalizeSetupOwnedState({ files });
   await (0, import_promises.mkdir)(runtimeDir(basePath2), { recursive: true });
@@ -918,7 +1081,7 @@ async function saveReconcileState(basePath2, taskIds) {
 }
 async function clearReconcileState(basePath2) {
   try {
-    await unlink(runtimePath(basePath2, RECONCILE_STATE_FILE));
+    await (0, import_fs.unlink)(runtimePath(basePath2, RECONCILE_STATE_FILE));
   } catch {
   }
 }
@@ -989,9 +1152,12 @@ function parseProgressMarkdown(raw) {
     if (line.startsWith("\u5F53\u524D: ")) current = line.slice(4).trim();
     if (current === "\u65E0") current = null;
     if (line.startsWith("\u5F00\u59CB: ")) startTime = line.slice(4).trim();
-    const matchedTask = line.match(/^\|\s*(\d{3,})\s*\|\s*(.+?)\s*\|\s*(\w+)\s*\|\s*([^|]*?)\s*\|\s*(\w+)\s*\|\s*(\d+)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*\|$/);
+    const matchedTask = line.match(/^\|\s*(\d{3,})\s*\|\s*(.+?)\s*\|\s*(\w+)\s*\|\s*([^|]*?)\s*\|\s*(\w+)\s*\|\s*(\d+)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*(?:\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*(.*?)\s*)?\|$/);
     if (matchedTask) {
       const depsRaw = matchedTask[4].trim();
+      const phase = matchedTask[9] === "-" || matchedTask[9] === void 0 ? void 0 : matchedTask[9];
+      const phaseUpdatedAt = matchedTask[10] === "-" || matchedTask[10] === void 0 ? void 0 : matchedTask[10];
+      const phaseNote = matchedTask[11] === "-" || matchedTask[11] === void 0 ? void 0 : matchedTask[11];
       tasks.push({
         id: matchedTask[1],
         title: matchedTask[2],
@@ -1000,7 +1166,10 @@ function parseProgressMarkdown(raw) {
         status: VALID_TASK_STATUS.has(matchedTask[5]) ? matchedTask[5] : "pending",
         retries: parseInt(matchedTask[6], 10),
         summary: matchedTask[7] === "-" ? "" : matchedTask[7],
-        description: matchedTask[8] === "-" ? "" : matchedTask[8]
+        description: matchedTask[8] === "-" ? "" : matchedTask[8],
+        ...phase ? { phase } : {},
+        ...phaseUpdatedAt ? { phaseUpdatedAt } : {},
+        ...phaseNote ? { phaseNote } : {}
       });
     }
   }
@@ -1080,7 +1249,7 @@ function cleanupClaudeContent(content, manifest) {
   }
   return normalized === content ? { effect: "noop" } : { effect: "write", content: normalized };
 }
-async function resolveInstructionFile(basePath2) {
+async function resolveInstructionFile(basePath2, client = "other") {
   const primaryPath = (0, import_path2.join)(basePath2, PRIMARY_INSTRUCTION_FILE);
   try {
     await (0, import_promises2.access)(primaryPath);
@@ -1092,6 +1261,9 @@ async function resolveInstructionFile(basePath2) {
     await (0, import_promises2.access)(legacyPath);
     return { absPath: legacyPath, relPath: LEGACY_INSTRUCTION_FILE };
   } catch {
+  }
+  if (client === "claude") {
+    return { absPath: legacyPath, relPath: LEGACY_INSTRUCTION_FILE };
   }
   return { absPath: primaryPath, relPath: PRIMARY_INSTRUCTION_FILE };
 }
@@ -1346,13 +1518,13 @@ var FsWorkflowRepository = class {
       `\u5F53\u524D: ${data.current ?? "\u65E0"}`,
       ...data.startTime ? [`\u5F00\u59CB: ${data.startTime}`] : [],
       "",
-      "| ID | \u6807\u9898 | \u7C7B\u578B | \u4F9D\u8D56 | \u72B6\u6001 | \u91CD\u8BD5 | \u6458\u8981 | \u63CF\u8FF0 |",
-      "|----|------|------|------|------|------|------|------|"
+      "| ID | \u6807\u9898 | \u7C7B\u578B | \u4F9D\u8D56 | \u72B6\u6001 | \u91CD\u8BD5 | \u6458\u8981 | \u63CF\u8FF0 | \u9636\u6BB5 | \u6700\u8FD1\u66F4\u65B0 | \u9636\u6BB5\u8FDB\u5C55 |",
+      "|----|------|------|------|------|------|------|------|------|----------|----------|"
     ];
     for (const t of data.tasks) {
       const deps = t.deps.length ? t.deps.join(",") : "-";
       const esc = (s) => (s || "-").replace(/\|/g, "\u2223").replace(/\n/g, " ");
-      lines.push(`| ${t.id} | ${esc(t.title)} | ${t.type} | ${deps} | ${t.status} | ${t.retries} | ${esc(t.summary)} | ${esc(t.description)} |`);
+      lines.push(`| ${t.id} | ${esc(t.title)} | ${t.type} | ${deps} | ${t.status} | ${t.retries} | ${esc(t.summary)} | ${esc(t.description)} | ${esc(t.phase ?? "")} | ${esc(t.phaseUpdatedAt ?? "")} | ${esc(t.phaseNote ?? "")} |`);
     }
     const p = (0, import_path2.join)(this.root, "progress.md");
     await (0, import_promises2.writeFile)(p + ".tmp", lines.join("\n") + "\n", "utf-8");
@@ -1361,7 +1533,17 @@ var FsWorkflowRepository = class {
   async loadProgress() {
     try {
       const raw = await (0, import_promises2.readFile)((0, import_path2.join)(this.root, "progress.md"), "utf-8");
-      return parseProgressMarkdown(raw);
+      const data = parseProgressMarkdown(raw);
+      const pulseState = await loadTaskPulseState(this.base);
+      const activationState = await loadActivationState(this.base);
+      const dataWithActivation = {
+        ...data,
+        tasks: data.tasks.map((task) => ({
+          ...task,
+          activatedAt: activationState[task.id]?.time
+        }))
+      };
+      return mergeTaskPulsesIntoProgress(dataWithActivation, pulseState);
     } catch {
       return null;
     }
@@ -1412,8 +1594,22 @@ var FsWorkflowRepository = class {
       return null;
     }
   }
+  async saveTaskPulse(taskId, update) {
+    await recordTaskPulse(this.base, taskId, {
+      phase: update.phase,
+      updatedAt: update.updatedAt ?? (/* @__PURE__ */ new Date()).toISOString(),
+      ...update.note ? { note: update.note } : {}
+    });
+  }
+  async loadTaskPulses() {
+    const state = await loadTaskPulseState(this.base);
+    return { ...state.byTask };
+  }
+  async clearTaskPulse(taskId) {
+    await clearTaskPulse(this.base, taskId);
+  }
   async ensureClaudeMd(client = "other") {
-    const { relPath } = await resolveInstructionFile(this.base);
+    const { relPath } = await resolveInstructionFile(this.base, client);
     return ensureInstructionDocument(this.base, relPath, client);
   }
   async ensureRoleMd(client = "other") {
@@ -3605,14 +3801,23 @@ async function runHeartbeat(basePath2, config) {
     if (data.status === "running") {
       const activeIds = data.tasks.filter((task) => task.status === "active").map((task) => task.id);
       if (activeIds.length) {
-        const [window, activationState] = await Promise.all([
+        const [window, activationState, pulseState] = await Promise.all([
           loadWindow(basePath2),
-          loadActivationState(basePath2)
+          loadActivationState(basePath2),
+          loadTaskPulseState(basePath2)
         ]);
         const lastCheckpointTimeMs = window.length ? new Date(window[window.length - 1].timestamp).getTime() : 0;
         const timedOutIds = getTimedOutTaskIds(activeIds, activationState, lastCheckpointTimeMs);
         if (timedOutIds.length) {
           warnings.push(`[TIMEOUT] \u4EFB\u52A1 ${timedOutIds.join(",")} \u8D85\u8FC730\u5206\u949F\u65E0checkpoint`);
+        }
+        const stalePulseIds = activeIds.filter((id) => {
+          const updatedAt = pulseState.byTask[id]?.updatedAt;
+          if (!updatedAt) return false;
+          return Date.now() - new Date(updatedAt).getTime() > TASK_TIMEOUT_MS;
+        });
+        if (stalePulseIds.length) {
+          warnings.push(`[STALL] \u4EFB\u52A1 ${stalePulseIds.join(",")} \u8D85\u8FC730\u5206\u949F\u65E0\u9636\u6BB5\u4E0A\u62A5`);
         }
       }
     }
@@ -3754,7 +3959,155 @@ async function detect(basePath2, taskId, summary, failed, activeHours) {
   return repeatedNoProgress(updated) ?? pingPong(updated) ?? globalCircuitBreaker(updated);
 }
 
+// src/interfaces/formatter.ts
+var ICON = {
+  pending: "\u25CB",
+  active: "\u23F3",
+  done: "\u2713",
+  skipped: "\u2298",
+  failed: "\u2717"
+};
+function workflowName2(name) {
+  return name?.trim() ? name : "\u672A\u547D\u540D\u5DE5\u4F5C\u6D41";
+}
+function summarizeCounts(data) {
+  const done = data.tasks.filter((t) => t.status === "done").length;
+  const active = data.tasks.filter((t) => t.status === "active").length;
+  const pending = data.tasks.filter((t) => t.status === "pending").length;
+  const skipped2 = data.tasks.filter((t) => t.status === "skipped").length;
+  const failed = data.tasks.filter((t) => t.status === "failed").length;
+  const parts = [
+    done === data.tasks.length ? "\u2713 \u5168\u90E8\u5B8C\u6210" : `${done}/${data.tasks.length} \u5DF2\u5B8C\u6210`,
+    active ? `\u23F3 ${active} \u8FDB\u884C\u4E2D` : "",
+    pending ? `\u25CB ${pending} \u5F85\u6267\u884C` : "",
+    skipped2 ? `\u2298 ${skipped2} \u8DF3\u8FC7` : "",
+    failed ? `\u2717 ${failed} \u5931\u8D25` : ""
+  ].filter(Boolean);
+  return parts.join(" | ");
+}
+function readLiveValue(task, keys) {
+  for (const key of keys) {
+    const value = task[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return void 0;
+}
+function calcActiveDuration(activatedAt) {
+  if (!activatedAt) return null;
+  const elapsed = Date.now() - activatedAt;
+  const mins = Math.floor(elapsed / 6e4);
+  const secs = Math.floor(elapsed % 6e4 / 1e3);
+  if (mins === 0) return `\u23F1\uFE0F ${secs}\u79D2`;
+  return `\u23F1\uFE0F ${mins}\u5206${secs}\u79D2`;
+}
+function isTimeout(activatedAt) {
+  if (!activatedAt) return false;
+  return Date.now() - activatedAt > 5 * 60 * 1e3;
+}
+function formatTaskMeta(task) {
+  const stage = readLiveValue(task, ["stage", "phase", "liveStage"]);
+  const recent = readLiveValue(task, ["recentActivity", "lastActivityText", "activityAge"]);
+  const progress = readLiveValue(task, ["progressText", "latestProgress", "activitySummary"]);
+  const activatedAt = typeof task.activatedAt === "number" ? task.activatedAt : void 0;
+  const activeDuration = task.status === "active" ? calcActiveDuration(activatedAt) : null;
+  const timeoutWarning = task.status === "active" && isTimeout(activatedAt) ? "\u26A0\uFE0F \u8D85\u65F6" : "";
+  const parts = [
+    stage ? `\u{1F4CD} ${stage}` : "",
+    recent ? `\u{1F550} ${recent}` : "",
+    progress ? `\u{1F4C8} ${progress}` : "",
+    activeDuration ? activeDuration : "",
+    timeoutWarning
+  ].filter(Boolean);
+  return parts.length ? `   ${parts.join(" \xB7 ")}` : null;
+}
+function formatTaskLine(task) {
+  const icon = ICON[task.status] ?? "\u25CB";
+  const typeTag = `[${task.type}]`;
+  const summary = task.summary ? ` \u2014 ${task.summary}` : "";
+  const lines = [`${icon} ${task.id} ${typeTag} ${task.title}${summary}`];
+  const meta = formatTaskMeta(task);
+  if (meta) lines.push(meta);
+  return lines;
+}
+function formatStatus(data) {
+  const activeTasks = data.tasks.filter((task) => task.status === "active");
+  const blockedTasks = data.tasks.filter((task) => readLiveValue(task, ["stage", "phase", "liveStage"]) === "blocked");
+  const statusEmoji = data.status === "running" ? "\u{1F504}" : data.status === "finishing" ? "\u{1F3C1}" : "\u23F8";
+  const lines = [
+    `**\u2550\u2550\u2550 \u5DE5\u4F5C\u6D41\u72B6\u6001 \u2550\u2550\u2550**`,
+    `${statusEmoji} ${workflowName2(data.name)} \xB7 ${data.status}`,
+    `\u{1F4CA} ${summarizeCounts(data)}`,
+    "",
+    "**\u2550\u2550\u2550 \u4EFB\u52A1\u8FDB\u5EA6 \u2550\u2550\u2550**",
+    ...data.tasks.flatMap((task) => formatTaskLine(task))
+  ];
+  const nextSteps = [
+    activeTasks.length ? `\u23F3 \u7EE7\u7EED\u8DDF\u8FDB\u8FDB\u884C\u4E2D\u7684\u4EFB\u52A1 (${activeTasks.map((task) => task.id).join(", ")})` : "",
+    blockedTasks.length ? `\u26A0\uFE0F \u4F18\u5148\u5904\u7406\u963B\u585E\u4EFB\u52A1 (${blockedTasks.map((task) => task.id).join(", ")})` : "",
+    !activeTasks.length && !blockedTasks.length && data.tasks.some((task) => task.status === "pending") ? "\u{1F4A1} \u8FD0\u884C `node flow.js next` \u83B7\u53D6\u4E0B\u4E00\u6279\u4EFB\u52A1" : ""
+  ].filter(Boolean);
+  if (nextSteps.length) {
+    lines.push("", "**\u2550\u2550\u2550 \u4E0B\u4E00\u6B65 \u2550\u2550\u2550**", ...nextSteps.map((step) => `- ${step}`));
+  }
+  return lines.join("\n");
+}
+function formatTask(task, context) {
+  const icon = ICON[task.status] ?? "\u25CB";
+  const typeIcon = task.type === "frontend" ? "\u{1F3A8}" : task.type === "backend" ? "\u2699\uFE0F" : "\u{1F4CB}";
+  const lines = [
+    `**\u2550\u2550\u2550 \u4EFB\u52A1 ${task.id} \u2550\u2550\u2550**`,
+    `${icon} **${task.title}**`,
+    "",
+    `${typeIcon} \u7C7B\u578B: ${task.type}`,
+    `\u{1F4CE} \u4F9D\u8D56: ${task.deps.length ? task.deps.join(", ") : "\u65E0"}`,
+    `\u{1F3AF} \u76EE\u6807: ${task.description || "\u672A\u63D0\u4F9B\u989D\u5916\u63CF\u8FF0"}`,
+    "",
+    "**Checkpoint \u6307\u4EE4**",
+    "```",
+    `echo '\u4E00\u53E5\u8BDD\u6458\u8981' | node flow.js checkpoint ${task.id} --files <file1> <file2>`,
+    "```"
+  ];
+  if (context) {
+    lines.push("", "**\u2550\u2550\u2550 \u4E0A\u4E0B\u6587 \u2550\u2550\u2550**", context);
+  }
+  return lines.join("\n");
+}
+function formatBatch(items) {
+  const lines = [
+    "**\u2550\u2550\u2550 \u5E76\u884C\u4EFB\u52A1\u6279\u6B21 \u2550\u2550\u2550**",
+    `\u{1F4E6} \u672C\u8F6E\u5171 ${items.length} \u4E2A\u72EC\u7ACB\u4EFB\u52A1`,
+    "\u26A1 \u8981\u6C42: \u5728\u540C\u4E00\u6761\u6D88\u606F\u4E2D\u5E76\u884C\u6D3E\u53D1\u5168\u90E8\u4EFB\u52A1",
+    "\u{1F4A1} \u63D0\u793A: \u53EF\u628A\u8FD9\u4E00\u6279\u5F53\u4F5C\u540C\u4E00\u8F6E\u5E76\u884C\u524D\u6CBF\uFF0C\u4E00\u6B21\u6D3E\u5B8C\u518D\u7EDF\u4E00\u6C47\u603B",
+    ""
+  ];
+  for (const { task, context } of items) {
+    lines.push(formatTask(task, context), "");
+  }
+  return lines.join("\n");
+}
+function formatFinalSummary(data) {
+  const done = data.tasks.filter((t) => t.status === "done").length;
+  const skipped2 = data.tasks.filter((t) => t.status === "skipped").length;
+  const failed = data.tasks.filter((t) => t.status === "failed").length;
+  const pending = data.tasks.filter((t) => t.status === "pending" || t.status === "active").length;
+  const stats = [
+    `\u2713 ${done} \u5B8C\u6210`,
+    skipped2 ? `\u2298 ${skipped2} \u8DF3\u8FC7` : "",
+    failed ? `\u2717 ${failed} \u5931\u8D25` : "",
+    pending ? `\u25CB ${pending} \u672A\u5B8C\u6210` : ""
+  ].filter(Boolean).join(" \xB7 ");
+  return [
+    "**\u2550\u2550\u2550 \u6700\u7EC8\u603B\u7ED3 \u2550\u2550\u2550**",
+    `\u{1F4CB} \u5DE5\u4F5C\u6D41: ${workflowName2(data.name)}`,
+    `\u{1F4CA} \u7EDF\u8BA1: ${stats}`,
+    "",
+    "**\u2550\u2550\u2550 \u4EFB\u52A1\u5217\u8868 \u2550\u2550\u2550**",
+    ...data.tasks.flatMap((task) => formatTaskLine(task))
+  ].join("\n");
+}
+
 // src/application/workflow-service.ts
+var import_node_child_process3 = require("child_process");
 var import_promises10 = require("fs/promises");
 var import_path11 = require("path");
 var CHECKPOINT_FAILURE_PATTERNS = [
@@ -3768,6 +4121,7 @@ function isExplicitFailureCheckpoint(detail) {
   return CHECKPOINT_FAILURE_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 var CANONICAL_SETUP_NON_COMMITTABLE_FILES = ["AGENTS.md", "CLAUDE.md", ".gitignore"];
+var NON_BLOCKING_SETUP_RESIDUE_FILES = /* @__PURE__ */ new Set(["AGENTS.md", "CLAUDE.md", "ROLE.md"]);
 var WorkflowService = class {
   constructor(repo2, parse) {
     this.repo = repo2;
@@ -3808,51 +4162,107 @@ var WorkflowService = class {
     const client = config.client;
     return client === "claude" || client === "codex" || client === "cursor" || client === "snow-cli" || client === "other" ? client : "other";
   }
+  finalSummaryPath() {
+    return (0, import_path11.join)(this.repo.projectRoot(), ".workflow", "final-summary.md");
+  }
+  async persistFinalSummary(content) {
+    const path = this.finalSummaryPath();
+    await (0, import_promises10.mkdir)((0, import_path11.join)(this.repo.projectRoot(), ".workflow"), { recursive: true });
+    await (0, import_promises10.writeFile)(`${path}.tmp`, `${content}
+`, "utf-8");
+    await (0, import_promises10.rename)(`${path}.tmp`, path);
+  }
+  createEmptyFinalCommit(title, summary) {
+    const cwd = this.repo.projectRoot();
+    try {
+      (0, import_node_child_process3.execFileSync)("git", ["rev-parse", "--is-inside-work-tree"], { cwd, stdio: "pipe" });
+    } catch {
+      return { status: "skipped", reason: "no-files" };
+    }
+    const msg = `task-finish: ${title}
+
+${summary}`;
+    try {
+      (0, import_node_child_process3.execFileSync)("git", ["commit", "--allow-empty", "-F", "-"], {
+        cwd,
+        stdio: "pipe",
+        input: msg
+      });
+      return { status: "committed" };
+    } catch (error) {
+      return {
+        status: "failed",
+        error: `${cwd}: ${error?.stderr?.toString?.() || error?.message || String(error)}`
+      };
+    }
+  }
   async getResumeDirtyState(currentDirtyFiles = this.repo.listChangedFiles()) {
     const baseline = await loadDirtyBaseline(this.repo.projectRoot());
-    const comparison = compareDirtyFilesAgainstBaseline(currentDirtyFiles, baseline?.files ?? []);
     const setupOwnedSet = await this.loadSetupOwnedSet();
-    const residueFiles = (baseline ? comparison.newDirtyFiles : comparison.currentFiles).filter((file) => !setupOwnedSet.has(file));
+    const taskOwnedFiles = collectOwnedFiles(await loadOwnedFiles(this.repo.projectRoot()));
+    const classified = classifyResumeDirtyFiles(
+      currentDirtyFiles,
+      baseline?.files ?? null,
+      [...setupOwnedSet],
+      taskOwnedFiles
+    );
+    const residueFiles = classified.taskOwnedResidueFiles;
+    const ambiguousFiles = classified.ambiguousFiles;
     if (!baseline) {
-      if (!residueFiles.length) {
+      if (!residueFiles.length && !ambiguousFiles.length) {
         return {
           lines: ["\u672A\u627E\u5230 dirty baseline\uFF1B\u5F53\u524D\u5DE5\u4F5C\u533A\u65E0\u672A\u5F52\u6863\u53D8\u66F4\uFF0C\u4F46\u65E0\u6CD5\u8BC1\u660E\u8FD9\u662F\u5E72\u51C0\u91CD\u542F"],
           residueFiles,
+          ambiguousFiles,
           baselineFound: false
         };
       }
+      const lines2 = [
+        "\u672A\u627E\u5230 dirty baseline\uFF1B\u65E0\u6CD5\u53EF\u9760\u533A\u5206\u542F\u52A8\u524D\u53D8\u66F4\u3001\u4E2D\u65AD\u4EFB\u52A1\u6B8B\u7559\u4E0E\u7528\u6237\u624B\u52A8\u4FEE\u6539/\u5220\u9664\u3002"
+      ];
+      if (residueFiles.length) {
+        lines2.push(`\u5DF2\u4FDD\u7559 ${residueFiles.length} \u4E2A\u7531\u663E\u5F0F ownership \u652F\u6491\u7684\u5F85\u63A5\u7BA1\u53D8\u66F4:`);
+        lines2.push(...residueFiles.map((file) => `- ${file}`));
+      }
+      if (ambiguousFiles.length) {
+        lines2.push(`\u4FDD\u5B88\u4FDD\u7559 ${ambiguousFiles.length} \u4E2A\u5F52\u5C5E\u672A\u660E\u53D8\u66F4\uFF08\u53EF\u80FD\u5305\u542B\u7528\u6237\u624B\u52A8\u4FEE\u6539/\u5220\u9664\uFF0CFlowPilot \u4E0D\u4F1A\u81EA\u52A8\u6062\u590D\u8FD9\u4E9B\u6587\u4EF6\uFF09:`);
+        lines2.push(...ambiguousFiles.map((file) => `- ${file}`));
+      }
       return {
-        lines: [
-          `\u672A\u627E\u5230 dirty baseline\uFF1B\u65E0\u6CD5\u53EF\u9760\u533A\u5206\u542F\u52A8\u524D\u53D8\u66F4\u4E0E\u4E2D\u65AD\u540E\u5F85\u63A5\u7BA1\u53D8\u66F4\uFF0C\u4FDD\u5B88\u4FDD\u7559\u5F53\u524D ${residueFiles.length} \u4E2A\u672A\u5F52\u6863\u53D8\u66F4:`,
-          ...residueFiles.map((file) => `- ${file}`)
-        ],
+        lines: lines2,
         residueFiles,
+        ambiguousFiles,
         baselineFound: false
       };
     }
-    if (!comparison.currentFiles.length || !comparison.preservedBaselineFiles.length && !residueFiles.length) {
+    if (!classified.currentFiles.length || !classified.preservedBaselineFiles.length && !residueFiles.length && !ambiguousFiles.length) {
       return {
         lines: ["\u5F53\u524D\u5DE5\u4F5C\u533A\u65E0\u5F85\u63A5\u7BA1\u53D8\u66F4\uFF0C\u672C\u6B21\u6062\u590D\u662F\u5E72\u51C0\u91CD\u542F"],
         residueFiles: [],
+        ambiguousFiles: [],
         baselineFound: true
       };
     }
     const lines = [];
-    if (comparison.preservedBaselineFiles.length) {
-      lines.push(`\u5DE5\u4F5C\u6D41\u542F\u52A8\u524D\u5DF2\u6709 ${comparison.preservedBaselineFiles.length} \u4E2A\u672A\u5F52\u6863\u53D8\u66F4\u4ECD\u7136\u4FDD\u7559:`);
-      lines.push(...comparison.preservedBaselineFiles.map((file) => `- ${file}`));
+    if (classified.preservedBaselineFiles.length) {
+      lines.push(`\u5DE5\u4F5C\u6D41\u542F\u52A8\u524D\u5DF2\u6709 ${classified.preservedBaselineFiles.length} \u4E2A\u672A\u5F52\u6863\u53D8\u66F4\u4ECD\u7136\u4FDD\u7559:`);
+      lines.push(...classified.preservedBaselineFiles.map((file) => `- ${file}`));
     }
     if (residueFiles.length) {
-      lines.push(`\u5DF2\u4FDD\u7559 ${residueFiles.length} \u4E2A\u4E2D\u65AD\u540E\u5F85\u63A5\u7BA1\u53D8\u66F4:`);
+      lines.push(`\u5DF2\u4FDD\u7559 ${residueFiles.length} \u4E2A\u7531\u663E\u5F0F ownership \u652F\u6491\u7684\u5F85\u63A5\u7BA1\u53D8\u66F4:`);
       lines.push(...residueFiles.map((file) => `- ${file}`));
     }
-    return { lines, residueFiles, baselineFound: true };
+    if (ambiguousFiles.length) {
+      lines.push(`\u53D1\u73B0 ${ambiguousFiles.length} \u4E2A\u5DE5\u4F5C\u6D41\u671F\u95F4\u65B0\u589E\u4F46\u5F52\u5C5E\u672A\u660E\u7684\u53D8\u66F4\uFF08\u53EF\u80FD\u5305\u542B\u7528\u6237\u624B\u52A8\u4FEE\u6539/\u5220\u9664\uFF0CFlowPilot \u4E0D\u4F1A\u81EA\u52A8\u6062\u590D\u8FD9\u4E9B\u6587\u4EF6\uFF09:`);
+      lines.push(...ambiguousFiles.map((file) => `- ${file}`));
+    }
+    return { lines, residueFiles, ambiguousFiles, baselineFound: true };
   }
   async assertNotReconciling(data) {
     if (data.status !== "reconciling") return;
     const reconcile = await loadReconcileState(this.repo.projectRoot());
     const taskText = reconcile.taskIds.length ? ` ${reconcile.taskIds.join(", ")}` : "";
-    throw new Error(`\u5F53\u524D\u5DE5\u4F5C\u6D41\u5904\u4E8E reconciling \u72B6\u6001\uFF0C\u9700\u5148\u5904\u7406\u4E2D\u65AD\u4EFB\u52A1${taskText}\u3002\u8BF7\u5148\u6267\u884C node flow.js adopt <id> --files ...\uFF0C\u6216\u5728\u786E\u8BA4\u5E76\u5904\u7406\u5217\u51FA\u7684\u672C\u4EFB\u52A1\u53D8\u66F4\u540E\u6267\u884C node flow.js restart <id>\u3002\u4E0D\u5F97\u5904\u7406 baseline \u53D8\u66F4\u6216\u672A\u5217\u51FA\u7684\u5176\u4ED6\u9879\u76EE\u4EE3\u7801\uFF1B\u5FC5\u8981\u65F6\u53EF node flow.js skip <id>`);
+    throw new Error(`\u5F53\u524D\u5DE5\u4F5C\u6D41\u5904\u4E8E reconciling \u72B6\u6001\uFF0C\u9700\u5148\u5904\u7406\u4E2D\u65AD\u4EFB\u52A1${taskText}\u3002\u8BF7\u5148\u6267\u884C node flow.js adopt <id> --files ...\uFF0C\u6216\u5728\u786E\u8BA4\u5E76\u5904\u7406\u5217\u51FA\u7684\u672C\u4EFB\u52A1\u53D8\u66F4\u540E\u6267\u884C node flow.js restart <id>\u3002\u82E5\u5B58\u5728\u5F52\u5C5E\u672A\u660E\u53D8\u66F4\uFF0C\u5FC5\u987B\u5148\u4EBA\u5DE5\u786E\u8BA4\uFF1B\u4E0D\u8981\u5BF9\u6DF7\u6709\u624B\u52A8\u4FEE\u6539/\u5220\u9664\u7684\u6587\u4EF6\u6267\u884C\u6574\u6587\u4EF6 git restore\u3002\u4E0D\u5F97\u5904\u7406 baseline \u53D8\u66F4\u6216\u672A\u5217\u51FA\u7684\u5176\u4ED6\u9879\u76EE\u4EE3\u7801\uFF1B\u5FC5\u8981\u65F6\u53EF node flow.js skip <id>`);
   }
   async finalizeSuccessfulTask(data, task, detail, files) {
     if (!detail.trim()) throw new Error(`\u4EFB\u52A1 ${task.id} checkpoint\u5185\u5BB9\u4E0D\u80FD\u4E3A\u7A7A`);
@@ -4119,6 +4529,26 @@ ${warns.join("\n")}` : msg;
       await this.repo.unlock();
     }
   }
+  /** pulse: 记录任务阶段进展 */
+  async pulse(id, phase, note = "") {
+    await this.repo.lock();
+    try {
+      const data = await this.requireProgress();
+      const task = data.tasks.find((t) => t.id === id);
+      if (!task) throw new Error(`\u4EFB\u52A1 ${id} \u4E0D\u5B58\u5728`);
+      if (task.status !== "active") {
+        throw new Error(`\u4EFB\u52A1 ${id} \u72B6\u6001\u4E3A ${task.status}\uFF0C\u53EA\u6709 active \u72B6\u6001\u53EF\u4EE5 pulse`);
+      }
+      await this.repo.saveTaskPulse(id, {
+        phase,
+        updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        note: note.trim() || void 0
+      });
+      return note.trim() ? `\u5DF2\u8BB0\u5F55\u4EFB\u52A1 ${id} \u9636\u6BB5 ${phase}: ${note.trim()}` : `\u5DF2\u8BB0\u5F55\u4EFB\u52A1 ${id} \u9636\u6BB5 ${phase}`;
+    } finally {
+      await this.repo.unlock();
+    }
+  }
   /** resume: 中断恢复 */
   async resume() {
     const data = await this.repo.loadProgress();
@@ -4126,18 +4556,31 @@ ${warns.join("\n")}` : msg;
     log.debug(`resume: status=${data.status}, current=${data.current}`);
     if (data.status === "idle") return "\u5DE5\u4F5C\u6D41\u5F85\u547D\u4E2D\uFF0C\u7B49\u5F85\u9700\u6C42\u8F93\u5165";
     if (data.status === "completed") return "\u5DE5\u4F5C\u6D41\u5DF2\u5168\u90E8\u5B8C\u6210";
-    if (data.status === "finishing") return `\u6062\u590D\u5DE5\u4F5C\u6D41: ${data.name}
-\u6B63\u5728\u6536\u5C3E\u9636\u6BB5\uFF0C\u8BF7\u6267\u884C node flow.js finish`;
+    if (data.status === "finishing") {
+      return [
+        "**\u2550\u2550\u2550 \u5F53\u524D\u72B6\u6001 \u2550\u2550\u2550**",
+        `\u{1F3C1} \u5DE5\u4F5C\u6D41: ${data.name || "\u672A\u547D\u540D\u5DE5\u4F5C\u6D41"}`,
+        "\u{1F4CD} \u72B6\u6001: \u6536\u5C3E\u9636\u6BB5",
+        "",
+        "**\u2550\u2550\u2550 \u4E0B\u4E00\u6B65 \u2550\u2550\u2550**",
+        "\u{1F449} \u8FD0\u884C `node flow.js finish` \u5B8C\u6210\u6700\u7EC8\u6536\u5C3E"
+      ].join("\n");
+    }
     if (data.status === "reconciling") {
       const doneCount2 = data.tasks.filter((t) => t.status === "done").length;
       const total2 = data.tasks.length;
       const reconcile = await loadReconcileState(this.repo.projectRoot());
       const dirtyState2 = await this.getResumeDirtyState();
       return [
-        `\u6062\u590D\u5DE5\u4F5C\u6D41: ${data.name}`,
-        `\u8FDB\u5EA6: ${doneCount2}/${total2}`,
-        `\u68C0\u6D4B\u5230\u5F85\u63A5\u7BA1\u7684\u4E2D\u65AD\u4EFB\u52A1: ${reconcile.taskIds.join(", ") || data.current || "\u672A\u77E5"}`,
-        "\u5DF2\u6682\u505C\u7EE7\u7EED\u8C03\u5EA6\uFF1B\u8BF7\u5148\u6267\u884C node flow.js adopt <id> --files ...\uFF0C\u6216\u5728\u786E\u8BA4\u5E76\u5904\u7406\u5217\u51FA\u7684\u672C\u4EFB\u52A1\u53D8\u66F4\u540E node flow.js restart <id>\u3002\u4E0D\u5F97\u5904\u7406 baseline \u53D8\u66F4\u6216\u672A\u5217\u51FA\u7684\u5176\u4ED6\u9879\u76EE\u4EE3\u7801",
+        "**\u2550\u2550\u2550 \u6062\u590D\u5DE5\u4F5C\u6D41 \u2550\u2550\u2550**",
+        `\u{1F4C2} ${data.name}`,
+        `\u{1F4CA} \u8FDB\u5EA6: ${doneCount2}/${total2}`,
+        `\u26A0\uFE0F \u5F85\u63A5\u7BA1\u4E2D\u65AD\u4EFB\u52A1: ${reconcile.taskIds.join(", ") || data.current || "\u672A\u77E5"}`,
+        "",
+        "\u{1F449} \u8BF7\u5148\u6267\u884C `node flow.js adopt <id> --files ...`",
+        "   \u6216\u5728\u786E\u8BA4\u5E76\u5904\u7406\u5217\u51FA\u7684\u672C\u4EFB\u52A1\u53D8\u66F4\u540E `node flow.js restart <id>`",
+        "   \u82E5\u5B58\u5728\u5F52\u5C5E\u672A\u660E\u53D8\u66F4\uFF0C\u5FC5\u987B\u5148\u4EBA\u5DE5\u786E\u8BA4\uFF1B\u4E0D\u8981\u6574\u6587\u4EF6 git restore",
+        "   \u4E0D\u5F97\u5904\u7406 baseline \u53D8\u66F4\u6216\u672A\u5217\u51FA\u7684\u5176\u4ED6\u9879\u76EE\u4EE3\u7801",
         ...dirtyState2.lines
       ].join("\n");
     }
@@ -4145,7 +4588,7 @@ ${warns.join("\n")}` : msg;
     const { data: resumedData, resetId } = resumeProgress(data);
     this.locallyActivatedTaskIds.clear();
     const dirtyState = await this.getResumeDirtyState();
-    const shouldReconcile = hadActiveTasks.length > 0 && dirtyState.residueFiles.length > 0;
+    const shouldReconcile = hadActiveTasks.length > 0 && (dirtyState.residueFiles.length > 0 || dirtyState.ambiguousFiles.length > 0);
     const newData = shouldReconcile ? { ...resumedData, status: "reconciling", current: hadActiveTasks[0] ?? resumedData.current } : resumedData;
     await this.repo.saveProgress(newData);
     if (shouldReconcile) {
@@ -4161,12 +4604,20 @@ ${warns.join("\n")}` : msg;
     const total = newData.tasks.length;
     this.stopHeartbeat?.();
     this.stopHeartbeat = startHeartbeat(this.repo.projectRoot());
+    const statusIcon = shouldReconcile ? "\u26A0\uFE0F" : resetId ? "\u{1F504}" : "\u25B6\uFE0F";
+    const statusMsg = shouldReconcile ? `\u68C0\u6D4B\u5230\u4E2D\u65AD\u4EFB\u52A1 ${hadActiveTasks.join(", ")} \u7684\u5F85\u5904\u7406\u53D8\u66F4\uFF0C\u5DF2\u6682\u505C\u8C03\u5EA6` : resetId ? `\u4E2D\u65AD\u4EFB\u52A1 ${resetId} \u5DF2\u91CD\u7F6E\uFF0C\u5C06\u91CD\u65B0\u6267\u884C` : "\u7EE7\u7EED\u6267\u884C";
     const lines = [
-      `\u6062\u590D\u5DE5\u4F5C\u6D41: ${newData.name}`,
-      `\u8FDB\u5EA6: ${doneCount}/${total}`,
-      shouldReconcile ? `\u68C0\u6D4B\u5230\u4E2D\u65AD\u4EFB\u52A1 ${hadActiveTasks.join(", ")} \u7684\u5F85\u63A5\u7BA1\u53D8\u66F4\uFF0C\u5DF2\u6682\u505C\u7EE7\u7EED\u8C03\u5EA6\uFF1B\u8BF7\u5148\u6267\u884C node flow.js adopt ${hadActiveTasks[0]} --files ...\uFF0C\u6216\u5728\u786E\u8BA4\u5E76\u5904\u7406\u5217\u51FA\u7684\u672C\u4EFB\u52A1\u53D8\u66F4\u540E node flow.js restart ${hadActiveTasks[0]}\u3002\u4E0D\u5F97\u5904\u7406 baseline \u53D8\u66F4\u6216\u672A\u5217\u51FA\u7684\u5176\u4ED6\u9879\u76EE\u4EE3\u7801` : resetId ? `\u4E2D\u65AD\u4EFB\u52A1 ${resetId} \u5DF2\u91CD\u7F6E\uFF0C\u5C06\u91CD\u65B0\u6267\u884C` : "\u7EE7\u7EED\u6267\u884C",
+      "**\u2550\u2550\u2550 \u6062\u590D\u5DE5\u4F5C\u6D41 \u2550\u2550\u2550**",
+      `\u{1F4C2} ${newData.name}`,
+      `\u{1F4CA} \u8FDB\u5EA6: ${doneCount}/${total}`,
+      statusIcon + " " + statusMsg,
       ...dirtyState.lines
     ];
+    if (shouldReconcile) {
+      lines.push("");
+      lines.push("\u{1F449} \u8BF7\u5148\u6267\u884C `node flow.js adopt " + hadActiveTasks[0] + " --files ...`");
+      lines.push("   \u6216\u786E\u8BA4\u5E76\u5904\u7406\u5217\u51FA\u7684\u672C\u4EFB\u52A1\u53D8\u66F4\u540E `node flow.js restart " + hadActiveTasks[0] + "`");
+    }
     return lines.join("\n");
   }
   async adopt(id, detail, files) {
@@ -4213,8 +4664,11 @@ ${warns.join("\n")}` : msg;
         throw new Error(`\u4EFB\u52A1 ${id} \u4E0D\u5728\u5F85\u63A5\u7BA1\u5217\u8868\u4E2D`);
       }
       const dirtyState = await this.getResumeDirtyState();
+      if (dirtyState.ambiguousFiles.length > 0) {
+        throw new Error(`\u68C0\u6D4B\u5230 ${dirtyState.ambiguousFiles.length} \u4E2A\u5F52\u5C5E\u672A\u660E\u53D8\u66F4\uFF1A${dirtyState.ambiguousFiles.join(", ")}\u3002\u8FD9\u4E9B\u6587\u4EF6\u53EF\u80FD\u5305\u542B\u7528\u6237\u624B\u52A8\u4FEE\u6539/\u5220\u9664\uFF1BFlowPilot \u4E0D\u4F1A\u5EFA\u8BAE\u6574\u6587\u4EF6 git restore\u3002\u8BF7\u5148\u4EBA\u5DE5\u786E\u8BA4\uFF0C\u5C5E\u4E8E\u4EFB\u52A1\u4EA7\u7269\u5219\u4F7F\u7528 node flow.js adopt ${id} --files ... \u663E\u5F0F\u63A5\u7BA1\uFF0C\u5426\u5219\u4FDD\u7559\u8FD9\u4E9B\u6539\u52A8\u5E76\u907F\u514D\u8D8A\u754C\u6E05\u7406`);
+      }
       if (dirtyState.residueFiles.length > 0) {
-        throw new Error(`\u8BF7\u5148\u786E\u8BA4\u5E76\u5904\u7406\u5F53\u524D\u5217\u51FA\u7684\u672C\u4EFB\u52A1\u53D8\u66F4\u540E\u518D restart\uFF1A${dirtyState.residueFiles.join(", ")}\u3002\u4E0D\u5F97\u5904\u7406 baseline \u53D8\u66F4\u6216\u672A\u5217\u51FA\u7684\u5176\u4ED6\u9879\u76EE\u4EE3\u7801`);
+        throw new Error(`\u8BF7\u5148\u786E\u8BA4\u5E76\u5904\u7406\u5F53\u524D\u5217\u51FA\u7684\u672C\u4EFB\u52A1\u53D8\u66F4\u540E\u518D restart\uFF1A${dirtyState.residueFiles.join(", ")}\u3002\u82E5\u6587\u4EF6\u6DF7\u6709\u624B\u52A8\u4FEE\u6539/\u5220\u9664\uFF0C\u4E0D\u5F97\u6574\u6587\u4EF6 git restore\u3002\u4E0D\u5F97\u5904\u7406 baseline \u53D8\u66F4\u6216\u672A\u5217\u51FA\u7684\u5176\u4ED6\u9879\u76EE\u4EE3\u7801`);
       }
       const remainingTaskIds = reconcile.taskIds.filter((taskId) => taskId !== id);
       const newData = {
@@ -4284,7 +4738,9 @@ ${warns.join("\n")}` : msg;
         ].join("\n")
       };
     }
-    const leftoverSetupOwnedFiles = comparison.newDirtyFiles.filter((file) => setupOwnedSet.has(file) && !(file === ".gitignore" && gitignorePolicyMatches));
+    const leftoverSetupOwnedFiles = comparison.newDirtyFiles.filter(
+      (file) => setupOwnedSet.has(file) && !NON_BLOCKING_SETUP_RESIDUE_FILES.has(file) && !(file === ".gitignore" && gitignorePolicyMatches)
+    );
     if (leftoverSetupOwnedFiles.length > 0) {
       return {
         ok: false,
@@ -4372,38 +4828,54 @@ ${warns.join("\n")}` : msg;
     const lines = [];
     if (existing && (existing.status === "running" || existing.status === "finishing")) {
       const done = existing.tasks.filter((t) => t.status === "done").length;
-      lines.push(`\u68C0\u6D4B\u5230\u8FDB\u884C\u4E2D\u7684\u5DE5\u4F5C\u6D41: ${existing.name}`);
-      lines.push(`\u8FDB\u5EA6: ${done}/${existing.tasks.length}`);
+      const statusIcon = existing.status === "finishing" ? "\u{1F3C1}" : "\u{1F504}";
+      lines.push("**\u2550\u2550\u2550 \u68C0\u6D4B\u5230\u8FDB\u884C\u4E2D\u7684\u5DE5\u4F5C\u6D41 \u2550\u2550\u2550**");
+      lines.push(`\u{1F4C2} ${existing.name}`);
+      lines.push(`\u{1F4CA} \u8FDB\u5EA6: ${done}/${existing.tasks.length}`);
+      lines.push("");
       if (existing.status === "finishing") {
-        lines.push("\u72B6\u6001: \u6536\u5C3E\u9636\u6BB5\uFF0C\u6267\u884C node flow.js finish \u7EE7\u7EED");
+        lines.push("**\u2550\u2550\u2550 \u5F53\u524D\u72B6\u6001 \u2550\u2550\u2550**");
+        lines.push("\u{1F4CD} \u72B6\u6001: \u6536\u5C3E\u9636\u6BB5");
+        lines.push("\u{1F449} \u8FD0\u884C `node flow.js finish` \u7EE7\u7EED");
       } else {
-        lines.push("\u6267\u884C node flow.js resume \u7EE7\u7EED");
+        lines.push("**\u2550\u2550\u2550 \u5F53\u524D\u72B6\u6001 \u2550\u2550\u2550**");
+        lines.push("\u23F8 \u72B6\u6001: " + existing.status);
+        lines.push("\u{1F449} \u8FD0\u884C `node flow.js resume` \u7EE7\u7EED");
       }
     } else {
-      lines.push("\u9879\u76EE\u5DF2\u63A5\u7BA1\uFF0C\u5DE5\u4F5C\u6D41\u5DE5\u5177\u5C31\u7EEA");
-      lines.push("\u7B49\u5F85\u9700\u6C42\u8F93\u5165\uFF08\u6587\u6863\u6216\u5BF9\u8BDD\u63CF\u8FF0\uFF09");
+      lines.push("**\u2550\u2550\u2550 \u9879\u76EE\u72B6\u6001 \u2550\u2550\u2550**");
+      lines.push("\u2705 \u9879\u76EE\u5DF2\u63A5\u7BA1\uFF0C\u5DE5\u4F5C\u6D41\u5DE5\u5177\u5C31\u7EEA");
+      lines.push("\u23F3 \u7B49\u5F85\u9700\u6C42\u8F93\u5165\uFF08\u6587\u6863\u6216\u5BF9\u8BDD\u63CF\u8FF0\uFF09");
+      lines.push("");
+      lines.push("**\u2550\u2550\u2550 \u4E0B\u4E00\u6B65 \u2550\u2550\u2550**");
+      lines.push("\u{1F4A1} \u63CF\u8FF0\u4F60\u7684\u5F00\u53D1\u4EFB\u52A1\u5373\u53EF\u542F\u52A8\u5168\u81EA\u52A8\u5F00\u53D1");
     }
     lines.push("");
+    lines.push("**\u2550\u2550\u2550 \u751F\u6210\u7ED3\u679C \u2550\u2550\u2550**");
     if (wrote) {
       const instructionPath = (await loadSetupInjectionManifest(this.repo.projectRoot())).claudeMd?.path ?? "AGENTS.md";
-      lines.push(`${instructionPath} \u5DF2\u66F4\u65B0: \u6DFB\u52A0\u4E86\u5DE5\u4F5C\u6D41\u534F\u8BAE`);
+      lines.push(`\u2713 ${instructionPath} \u5DF2\u66F4\u65B0\uFF1A\u6DFB\u52A0\u4E86\u5DE5\u4F5C\u6D41\u534F\u8BAE`);
     }
     if (roleWrote) {
-      lines.push("ROLE.md \u5DF2\u66F4\u65B0: \u4E0E AGENTS.md \u4FDD\u6301\u4E00\u81F4\uFF0C\u4F9B snow-cli \u4F7F\u7528");
+      lines.push("\u2713 ROLE.md \u5DF2\u66F4\u65B0\uFF1A\u4E0E AGENTS.md \u4FDD\u6301\u4E00\u81F4");
     }
     if (client === "claude") {
-      lines.push(".claude/settings.json \u5DF2\u66F4\u65B0: \u6DFB\u52A0\u4E86 Claude Code Hooks");
+      lines.push("\u2713 .claude/settings.json \u5DF2\u66F4\u65B0\uFF1A\u6DFB\u52A0\u4E86 Claude Code Hooks");
     }
-    lines.push("\u63CF\u8FF0\u4F60\u7684\u5F00\u53D1\u4EFB\u52A1\u5373\u53EF\u542F\u52A8\u5168\u81EA\u52A8\u5F00\u53D1");
+    if (!lines.includes("\u63CF\u8FF0\u4F60\u7684\u5F00\u53D1\u4EFB\u52A1\u5373\u53EF\u542F\u52A8\u5168\u81EA\u52A8\u5F00\u53D1")) {
+      lines.push("");
+      lines.push("**\u2550\u2550\u2550 \u4E0B\u4E00\u6B65 \u2550\u2550\u2550**");
+      lines.push("\u{1F4A1} \u63CF\u8FF0\u4F60\u7684\u5F00\u53D1\u4EFB\u52A1\u5373\u53EF\u542F\u52A8\u5168\u81EA\u52A8\u5F00\u53D1");
+    }
     return lines.join("\n");
   }
   /** review: 标记已通过code-review，解锁finish */
   async review() {
     const data = await this.requireProgress();
     if (!isAllDone(data.tasks)) throw new Error("\u8FD8\u6709\u672A\u5B8C\u6210\u7684\u4EFB\u52A1\uFF0C\u8BF7\u5148\u5B8C\u6210\u6240\u6709\u4EFB\u52A1");
-    if (data.status === "finishing") return "\u5DF2\u5904\u4E8Ereview\u901A\u8FC7\u72B6\u6001\uFF0C\u53EF\u4EE5\u6267\u884C node flow.js finish";
+    if (data.status === "finishing") return "**\u2550\u2550\u2550 \u4EE3\u7801\u5BA1\u67E5 \u2550\u2550\u2550**\n\u2713 \u5DF2\u5904\u4E8E review \u901A\u8FC7\u72B6\u6001\n\n**\u2550\u2550\u2550 \u4E0B\u4E00\u6B65 \u2550\u2550\u2550**\n\u{1F449} \u8FD0\u884C `node flow.js finish` \u5B8C\u6210\u6536\u5C3E";
     await this.repo.saveProgress({ ...data, status: "finishing" });
-    return "\u4EE3\u7801\u5BA1\u67E5\u5DF2\u901A\u8FC7\uFF0C\u8BF7\u6267\u884C node flow.js finish \u5B8C\u6210\u6536\u5C3E";
+    return "**\u2550\u2550\u2550 \u4EE3\u7801\u5BA1\u67E5 \u2550\u2550\u2550**\n\u2705 \u4EE3\u7801\u5BA1\u67E5\u5DF2\u901A\u8FC7\n\n**\u2550\u2550\u2550 \u4E0B\u4E00\u6B65 \u2550\u2550\u2550**\n\u{1F449} \u8FD0\u884C `node flow.js finish` \u5B8C\u6210\u6536\u5C3E";
   }
   /** finish: 智能收尾 - 先verify，review后置 */
   async finish() {
@@ -4416,73 +4888,132 @@ ${warns.join("\n")}` : msg;
     const result = this.repo.verify();
     log.debug(`finish: verify passed=${result.passed}`);
     if (!result.passed) {
-      return `\u9A8C\u8BC1\u5931\u8D25: ${result.error}
-\u8BF7\u4FEE\u590D\u540E\u91CD\u65B0\u6267\u884C node flow.js finish`;
+      return [
+        "**\u2550\u2550\u2550 \u9A8C\u8BC1\u7ED3\u679C \u2550\u2550\u2550**",
+        "\u2717 \u9A8C\u8BC1\u5931\u8D25",
+        "",
+        "\u{1F4CB} \u9519\u8BEF\u8BE6\u60C5:",
+        result.error,
+        "",
+        "\u{1F449} \u8BF7\u4FEE\u590D\u540E\u91CD\u65B0\u6267\u884C `node flow.js finish`"
+      ].join("\n");
     }
     const verifySummary = this.formatVerifySummary(result);
     if (data.status !== "finishing") {
-      return `\u9A8C\u8BC1\u901A\u8FC7
-${verifySummary}
-\u8BF7\u6D3E\u5B50Agent\u6267\u884C code-review\uFF0C\u5B8C\u6210\u540E\u6267\u884C node flow.js review\uFF0C\u518D\u6267\u884C node flow.js finish`;
+      return [
+        "**\u2550\u2550\u2550 \u9A8C\u8BC1\u7ED3\u679C \u2550\u2550\u2550**",
+        "\u2705 \u9A8C\u8BC1\u901A\u8FC7",
+        verifySummary,
+        "",
+        "**\u2550\u2550\u2550 \u4E0B\u4E00\u6B65 \u2550\u2550\u2550**",
+        "1. \u6D3E\u5B50Agent\u6267\u884C code-review",
+        "2. \u5B8C\u6210\u540E\u8FD0\u884C `node flow.js review`",
+        "3. \u518D\u8FD0\u884C `node flow.js finish`"
+      ].join("\n");
     }
     const done = data.tasks.filter((t) => t.status === "done");
     const skipped2 = data.tasks.filter((t) => t.status === "skipped");
     const failed = data.tasks.filter((t) => t.status === "failed");
     const stats = [`${done.length} done`, skipped2.length ? `${skipped2.length} skipped` : "", failed.length ? `${failed.length} failed` : ""].filter(Boolean).join(", ");
+    const finalSummary = formatFinalSummary(data);
     const finishBoundary = await this.resolveFinishCommitFiles();
     if (finishBoundary.ok === false) {
-      return `${verifySummary}
-${stats}
-${finishBoundary.message}`;
+      return [
+        "**\u2550\u2550\u2550 \u9A8C\u8BC1\u7ED3\u679C \u2550\u2550\u2550**",
+        "\u2705 \u9A8C\u8BC1\u901A\u8FC7",
+        verifySummary,
+        "",
+        "**\u2550\u2550\u2550 \u5B8C\u6210\u7EDF\u8BA1 \u2550\u2550\u2550**",
+        stats,
+        "",
+        finalSummary,
+        finishBoundary.message
+      ].join("\n");
     }
     if (finishBoundary.ok === "degraded") {
-      this.repo.cleanTags();
-      await this.repo.clearAll();
-      return `${verifySummary}
-${stats}
-${finishBoundary.message}
-\u672A\u63D0\u4EA4\u6700\u7EC8commit\uFF1A\u672A\u627E\u5230 dirty baseline\uFF0C\u4FDD\u5B88\u8DF3\u8FC7 auto-commit
-\u5DE5\u4F5C\u6D41\u56DE\u5230\u5F85\u547D\u72B6\u6001
-\u7B49\u5F85\u4E0B\u4E00\u4E2A\u9700\u6C42...`;
+      await this.persistFinalSummary(finalSummary);
+      return [
+        "**\u2550\u2550\u2550 \u9A8C\u8BC1\u7ED3\u679C \u2550\u2550\u2550**",
+        "\u2705 \u9A8C\u8BC1\u901A\u8FC7",
+        verifySummary,
+        "",
+        "**\u2550\u2550\u2550 \u5B8C\u6210\u7EDF\u8BA1 \u2550\u2550\u2550**",
+        stats,
+        "",
+        finalSummary,
+        finishBoundary.message,
+        "",
+        "**\u2550\u2550\u2550 \u4E0B\u4E00\u6B65 \u2550\u2550\u2550**",
+        "\u26A0\uFE0F \u672A\u63D0\u4EA4\u6700\u7EC8commit\uFF1A\u672A\u627E\u5230 dirty baseline\uFF0C\u4FDD\u5B88\u8DF3\u8FC7 auto-commit",
+        "\u{1F449} \u5DE5\u4F5C\u6D41\u4ECD\u505C\u7559\u5728\u6536\u5C3E\u9636\u6BB5\uFF0C\u8BF7\u5148\u5904\u7406\u6700\u7EC8\u63D0\u4EA4\u8FB9\u754C\uFF0C\u518D\u91CD\u65B0\u6267\u884C `node flow.js finish`"
+      ].join("\n");
     }
     const titles = done.map((t) => `- ${t.id}: ${t.title}`).join("\n");
-    await runLifecycleHook("onWorkflowFinish", this.repo.projectRoot(), { WORKFLOW_NAME: data.name });
-    const wfStats = collectStats(data);
-    await this.repo.saveHistory(wfStats);
-    const configBeforeEvolution = await this.repo.loadConfig();
-    const reflectReport = await reflect(wfStats, this.repo.projectRoot());
-    const experimentRan = reflectReport.experiments.length > 0;
-    if (experimentRan) {
-      await experiment(reflectReport, this.repo.projectRoot());
-    }
-    const configAfterEvolution = await this.repo.loadConfig();
-    const changedConfigKeys = this.diffConfigKeys(configBeforeEvolution, configAfterEvolution);
-    if (changedConfigKeys.length > 0) {
-      await this.repo.saveEvolution({
-        timestamp: (/* @__PURE__ */ new Date()).toISOString(),
-        workflowName: data.name,
-        configBefore: configBeforeEvolution,
-        configAfter: configAfterEvolution,
-        suggestions: []
-      });
-    }
-    const evolutionSummary = this.formatEvolutionSummary({
-      reflectRan: true,
-      experimentRan,
-      changedConfigKeys
-    });
-    this.repo.cleanTags();
-    const commitResult = this.repo.commit("finish", data.name || "\u5DE5\u4F5C\u6D41\u5B8C\u6210", `${stats}
+    const finishCommitSummary = `${stats}
 
-${titles}`, finishBoundary.files);
-    if (commitResult.status !== "failed") {
+${titles}`;
+    const commitResult = finishBoundary.files.length > 0 ? this.repo.commit("finish", data.name || "\u5DE5\u4F5C\u6D41\u5B8C\u6210", finishCommitSummary, finishBoundary.files) : this.createEmptyFinalCommit(data.name || "\u5DE5\u4F5C\u6D41\u5B8C\u6210", finishCommitSummary);
+    if (commitResult.status === "committed") {
+      await this.persistFinalSummary(finalSummary);
+      await runLifecycleHook("onWorkflowFinish", this.repo.projectRoot(), { WORKFLOW_NAME: data.name });
+      const wfStats = collectStats(data);
+      await this.repo.saveHistory(wfStats);
+      const configBeforeEvolution = await this.repo.loadConfig();
+      const reflectReport = await reflect(wfStats, this.repo.projectRoot());
+      const experimentRan = reflectReport.experiments.length > 0;
+      if (experimentRan) {
+        await experiment(reflectReport, this.repo.projectRoot());
+      }
+      const configAfterEvolution = await this.repo.loadConfig();
+      const changedConfigKeys = this.diffConfigKeys(configBeforeEvolution, configAfterEvolution);
+      if (changedConfigKeys.length > 0) {
+        await this.repo.saveEvolution({
+          timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+          workflowName: data.name,
+          configBefore: configBeforeEvolution,
+          configAfter: configAfterEvolution,
+          suggestions: []
+        });
+      }
+      const evolutionSummary = this.formatEvolutionSummary({
+        reflectRan: true,
+        experimentRan,
+        changedConfigKeys
+      });
+      this.repo.cleanTags();
       await this.repo.clearAll();
+      return [
+        "**\u2550\u2550\u2550 \u9A8C\u8BC1\u7ED3\u679C \u2550\u2550\u2550**",
+        "\u2705 \u9A8C\u8BC1\u901A\u8FC7",
+        verifySummary,
+        "",
+        "**\u2550\u2550\u2550 \u5B8C\u6210\u7EDF\u8BA1 \u2550\u2550\u2550**",
+        stats,
+        "",
+        finalSummary,
+        `${evolutionSummary}${this.formatCommitMessage(commitResult, "finish")}`,
+        "",
+        "**\u2550\u2550\u2550 \u5DE5\u4F5C\u6D41\u5B8C\u6210 \u2550\u2550\u2550**",
+        "\u{1F389} \u5DE5\u4F5C\u6D41\u5DF2\u56DE\u5230\u5F85\u547D\u72B6\u6001",
+        "\u23F3 \u7B49\u5F85\u4E0B\u4E00\u4E2A\u9700\u6C42..."
+      ].join("\n");
     }
-    return `${verifySummary}
-${stats}
-${evolutionSummary}${this.formatCommitMessage(commitResult, "finish")}
-\u5DE5\u4F5C\u6D41\u56DE\u5230\u5F85\u547D\u72B6\u6001
-\u7B49\u5F85\u4E0B\u4E00\u4E2A\u9700\u6C42...`;
+    await this.persistFinalSummary(finalSummary);
+    const nextStep = commitResult.status === "failed" ? "\u6700\u7EC8commit\u5931\u8D25\uFF0C\u5DE5\u4F5C\u6D41\u4ECD\u505C\u7559\u5728\u6536\u5C3E\u9636\u6BB5\uFF1B\u8BF7\u4FEE\u590D\u540E\u91CD\u65B0\u6267\u884C node flow.js finish" : "\u6700\u7EC8commit\u5C1A\u672A\u5B8C\u6210\uFF0C\u5DE5\u4F5C\u6D41\u4ECD\u505C\u7559\u5728\u6536\u5C3E\u9636\u6BB5\uFF1B\u8BF7\u5904\u7406\u63D0\u4EA4\u8FB9\u754C\u540E\u91CD\u65B0\u6267\u884C node flow.js finish";
+    return [
+      "**\u2550\u2550\u2550 \u9A8C\u8BC1\u7ED3\u679C \u2550\u2550\u2550**",
+      "\u2705 \u9A8C\u8BC1\u901A\u8FC7",
+      verifySummary,
+      "",
+      "**\u2550\u2550\u2550 \u5B8C\u6210\u7EDF\u8BA1 \u2550\u2550\u2550**",
+      stats,
+      "",
+      finalSummary,
+      this.formatCommitMessage(commitResult, "finish"),
+      "",
+      "**\u2550\u2550\u2550 \u4E0B\u4E00\u6B65 \u2550\u2550\u2550**",
+      "\u26A0\uFE0F " + nextStep
+    ].join("\n");
   }
   /** 计算 config 变更的键列表（浅比较，键名排序） */
   diffConfigKeys(before, after) {
@@ -4778,58 +5309,8 @@ ${entry}`;
 };
 
 // src/interfaces/cli.ts
-var import_fs4 = require("fs");
-var import_path12 = require("path");
-
-// src/interfaces/formatter.ts
-var ICON = {
-  pending: "[ ]",
-  active: "[>]",
-  done: "[x]",
-  skipped: "[-]",
-  failed: "[!]"
-};
-function formatStatus(data) {
-  const done = data.tasks.filter((t) => t.status === "done").length;
-  const lines = [
-    `=== ${data.name} ===`,
-    `\u72B6\u6001: ${data.status} | \u8FDB\u5EA6: ${done}/${data.tasks.length}`,
-    ""
-  ];
-  for (const t of data.tasks) {
-    lines.push(`${ICON[t.status] ?? "[ ]"} ${t.id} [${t.type}] ${t.title}${t.summary ? " - " + t.summary : ""}`);
-  }
-  return lines.join("\n");
-}
-function formatTask(task, context) {
-  const lines = [
-    `--- \u4EFB\u52A1 ${task.id} ---`,
-    `\u6807\u9898: ${task.title}`,
-    `\u7C7B\u578B: ${task.type}`,
-    `\u4F9D\u8D56: ${task.deps.length ? task.deps.join(", ") : "\u65E0"}`
-  ];
-  if (task.description) {
-    lines.push(`\u63CF\u8FF0: ${task.description}`);
-  }
-  lines.push("", "--- checkpoint\u6307\u4EE4\uFF08\u5FC5\u987B\u5305\u542B\u5728sub-agent prompt\u4E2D\uFF09 ---");
-  lines.push(`\u5B8C\u6210\u65F6: echo '\u4E00\u53E5\u8BDD\u6458\u8981' | node flow.js checkpoint ${task.id} --files <changed-file-1> <changed-file-2>`);
-  lines.push(`\u5931\u8D25\u65F6: echo 'FAILED' | node flow.js checkpoint ${task.id}`);
-  if (context) {
-    lines.push("", "--- \u4E0A\u4E0B\u6587 ---", context);
-  }
-  return lines.join("\n");
-}
-function formatBatch(items) {
-  const lines = [
-    `=== \u5E76\u884C\u4EFB\u52A1\u6279\u6B21 (${items.length}\u4E2A) ===`,
-    "\u5FC5\u987B\u5C06\u672C\u6279\u6B21\u5168\u90E8\u4EFB\u52A1\u5728\u540C\u4E00\u6761\u6D88\u606F\u4E2D\u5E76\u884C\u6D3E\u53D1\u7ED9\u5B50Agent\u3002\u82E5\u6539\u4E3A\u4E32\u884C\u6D3E\u53D1\uFF0C\u4F1A\u76F4\u63A5\u964D\u4F4E\u541E\u5410\u91CF\u5E76\u8FDD\u53CD\u534F\u8BAE\u3002",
-    ""
-  ];
-  for (const { task, context } of items) {
-    lines.push(formatTask(task, context), "");
-  }
-  return lines.join("\n");
-}
+var import_fs5 = require("fs");
+var import_path13 = require("path");
 
 // src/interfaces/stdin.ts
 var import_promises11 = require("readline/promises");
@@ -4856,7 +5337,7 @@ function readStdinIfPiped(timeout = 3e4) {
   });
 }
 var CLIENT_OPTIONS = [
-  { key: "1", value: "claude", label: "Claude Code", detail: "\u751F\u6210 AGENTS.md + .claude/settings.json" },
+  { key: "1", value: "claude", label: "Claude Code", detail: "\u9ED8\u8BA4\u751F\u6210 CLAUDE.md + .claude/settings.json" },
   { key: "2", value: "codex", label: "Codex", detail: "\u53EA\u751F\u6210 AGENTS.md" },
   { key: "3", value: "cursor", label: "Cursor", detail: "\u53EA\u751F\u6210 AGENTS.md" },
   { key: "4", value: "snow-cli", label: "snow-cli", detail: "\u751F\u6210 AGENTS.md + ROLE.md" },
@@ -4870,9 +5351,14 @@ function resolveSetupClientChoice(answer) {
 async function promptSetupClient() {
   if (!isTTY()) return "other";
   process.stdout.write([
-    "\u8BF7\u9009\u62E9\u76EE\u6807\u5BA2\u6237\u7AEF\uFF1A",
+    "**\u5BA2\u6237\u7AEF\u9009\u62E9**",
+    "\u8BF7\u9009\u62E9\u76EE\u6807\u5BA2\u6237\u7AEF\u3002\u8FD9\u91CC\u7684\u9009\u62E9\u53EA\u5F71\u54CD\u751F\u6210\u8BF4\u660E\u6587\u4EF6\u4E0E\u5BA2\u6237\u7AEF\u914D\u7F6E\uFF0C\u4E0D\u4F1A\u6539\u53D8 FlowPilot \u7684\u534F\u8BAE\u4F18\u5148\u7EA7\u548C\u8C03\u5EA6\u89C4\u5219\u3002",
     ...CLIENT_OPTIONS.map((option) => `${option.key}. ${option.label} - ${option.detail}`),
-    "\u76F4\u63A5\u56DE\u8F66\u9ED8\u8BA4\u9009\u62E9 5. Other",
+    "",
+    "**\u63D0\u793A**",
+    "- Claude Code \u9ED8\u8BA4\u751F\u6210 CLAUDE.md",
+    "- Codex / Cursor / Other \u9ED8\u8BA4\u751F\u6210 AGENTS.md",
+    "- \u76F4\u63A5\u56DE\u8F66\u9ED8\u8BA4\u9009\u62E9 5. Other",
     ""
   ].join("\n"));
   const rl = (0, import_promises11.createInterface)({ input: process.stdin, output: process.stdout });
@@ -4882,6 +5368,140 @@ async function promptSetupClient() {
   } finally {
     rl.close();
   }
+}
+
+// src/infrastructure/updater.ts
+var import_fs4 = require("fs");
+var import_path12 = require("path");
+var import_child_process2 = require("child_process");
+var REPO_OWNER = "6BNBN";
+var REPO_NAME = "FlowPilot";
+var CACHE_DURATION_MS = 24 * 60 * 60 * 1e3;
+function getCachePath() {
+  return (0, import_path12.join)(process.cwd(), ".flowpilot", "update-cache.json");
+}
+function getCurrentVersion() {
+  try {
+    const cwd = process.cwd();
+    const flowPath = (0, import_fs4.existsSync)((0, import_path12.join)(cwd, "flow.js")) ? (0, import_path12.join)(cwd, "flow.js") : (0, import_path12.join)(cwd, "dist", "flow.js");
+    if ((0, import_fs4.existsSync)(flowPath)) {
+      const content = (0, import_fs4.readFileSync)(flowPath, "utf-8");
+      const match = content.match(/\/\/ FLOWPILOT_VERSION:\s*(\d+\.\d+\.\d+)/);
+      if (match) return match[1];
+    }
+  } catch {
+  }
+  return "0.0.0";
+}
+function getFlowPath() {
+  const cwd = process.cwd();
+  return (0, import_fs4.existsSync)((0, import_path12.join)(cwd, "flow.js")) ? (0, import_path12.join)(cwd, "flow.js") : (0, import_path12.join)(cwd, "dist", "flow.js");
+}
+function parseVersion(version) {
+  return version.replace(/^v/, "").split(".").map(Number);
+}
+function compareVersions(current, latest) {
+  const cur = parseVersion(current);
+  const lat = parseVersion(latest);
+  for (let i = 0; i < 3; i++) {
+    const c = cur[i] || 0;
+    const l = lat[i] || 0;
+    if (l > c) return true;
+    if (l < c) return false;
+  }
+  return false;
+}
+function fetchLatestInfo() {
+  try {
+    const apiUrl = "https://api.github.com/repos/" + REPO_OWNER + "/" + REPO_NAME + "/releases/latest";
+    const cmd = 'curl -s -H "Accept: application/vnd.github+json" "' + apiUrl + '"';
+    const result = (0, import_child_process2.execSync)(cmd, { encoding: "utf-8", timeout: 1e4 });
+    const data = JSON.parse(result);
+    const version = data.tag_name ? data.tag_name.replace(/^v/, "") : null;
+    if (!version) return null;
+    const flowAsset = data.assets ? data.assets.find((a) => a.name === "flow.js") : null;
+    const downloadUrl = flowAsset ? flowAsset.browser_download_url : "https://raw.githubusercontent.com/" + REPO_OWNER + "/" + REPO_NAME + "/main/dist/flow.js";
+    return { version, url: downloadUrl };
+  } catch {
+    return null;
+  }
+}
+function downloadUpdate(url, version) {
+  try {
+    const flowPath = getFlowPath();
+    console.error("\u6B63\u5728\u4E0B\u8F7D\u65B0\u7248\u672C...");
+    const cmd = 'curl -s -L "' + url + '"';
+    const content = (0, import_child_process2.execSync)(cmd, { encoding: "utf-8", timeout: 6e4 });
+    const shebang = "#!/usr/bin/env node";
+    if (content.indexOf(shebang) === -1) {
+      console.error("\u4E0B\u8F7D\u7684\u6587\u4EF6\u4E0D\u662F\u6709\u6548\u7684 flow.js");
+      return false;
+    }
+    (0, import_fs4.writeFileSync)(flowPath, content);
+    console.error("\u5DF2\u66F4\u65B0\u5230 v" + version + "\uFF0C\u8BF7\u91CD\u65B0\u8FD0\u884C\u547D\u4EE4");
+    return true;
+  } catch (e) {
+    console.error("\u4E0B\u8F7D\u5931\u8D25: " + e);
+    return false;
+  }
+}
+function loadCache2() {
+  const cachePath3 = getCachePath();
+  if (!(0, import_fs4.existsSync)(cachePath3)) return null;
+  try {
+    return JSON.parse((0, import_fs4.readFileSync)(cachePath3, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+function saveCache2(cache) {
+  const cachePath3 = getCachePath();
+  const dir = (0, import_path12.dirname)(cachePath3);
+  if (!(0, import_fs4.existsSync)(dir)) (0, import_fs4.mkdirSync)(dir, { recursive: true });
+  (0, import_fs4.writeFileSync)(cachePath3, JSON.stringify(cache, null, 2));
+}
+function checkForUpdate() {
+  const currentVersion = getCurrentVersion();
+  if (currentVersion === "0.0.0") return null;
+  const cache = loadCache2();
+  const now = Date.now();
+  if (cache && now - cache.checkedAt < CACHE_DURATION_MS) {
+    if (cache.hasUpdate) {
+      console.error("\n\u53D1\u73B0\u65B0\u7248\u672C: v" + cache.latestVersion + " (\u5F53\u524D: v" + cache.currentVersion + ")");
+      const downloaded = downloadUpdate(
+        "https://raw.githubusercontent.com/" + REPO_OWNER + "/" + REPO_NAME + "/main/dist/flow.js",
+        cache.latestVersion
+      );
+      return downloaded ? true : null;
+    }
+    return false;
+  }
+  const latestInfo = fetchLatestInfo();
+  if (!latestInfo) {
+    if (cache) return null;
+    const failedCache = {
+      checkedAt: now,
+      latestVersion: currentVersion,
+      currentVersion,
+      hasUpdate: false
+    };
+    saveCache2(failedCache);
+    return null;
+  }
+  const hasUpdate = compareVersions(currentVersion, latestInfo.version);
+  const newCache = {
+    checkedAt: now,
+    latestVersion: latestInfo.version,
+    currentVersion,
+    hasUpdate
+  };
+  saveCache2(newCache);
+  if (hasUpdate) {
+    console.error("\n\u53D1\u73B0\u65B0\u7248\u672C: v" + latestInfo.version + " (\u5F53\u524D: v" + currentVersion + ")");
+    const downloaded = downloadUpdate(latestInfo.url, latestInfo.version);
+    return downloaded ? true : null;
+  }
+  return false;
 }
 
 // src/interfaces/cli.ts
@@ -4897,18 +5517,37 @@ var CLI = class {
       enableVerbose();
       args.splice(verboseIdx, 1);
     }
+    const cmd = args[0] || "";
+    const noUpdateCheck = cmd === "version" || cmd === "help" || cmd === "-h" || cmd === "--help";
     try {
-      const output = await this.dispatch(args);
+      let output = await this.dispatch(args);
+      if (!noUpdateCheck) {
+        const updateResult = checkForUpdate();
+        if (updateResult === true) {
+          process.stderr.write("\n\u5DF2\u81EA\u52A8\u66F4\u65B0\u5230\u6700\u65B0\u7248\u672C\uFF0C\u5EFA\u8BAE\u91CD\u65B0\u8FD0\u884C\u539F\u547D\u4EE4\uFF08\u5982 node flow.js init\uFF09\u4EE5\u786E\u4FDD\u521D\u59CB\u5316\u6700\u65B0\u914D\u7F6E\n");
+          process.exit(0);
+        }
+      }
       process.stdout.write(output + "\n");
     } catch (e) {
-      process.stderr.write(`\u9519\u8BEF: ${e instanceof Error ? e.message : e}
-`);
+      process.stderr.write("\u9519\u8BEF: " + (e instanceof Error ? e.message : e) + "\n");
       process.exitCode = 1;
     }
   }
   async dispatch(args) {
     const [cmd, ...rest] = args;
     const s = this.service;
+    if (cmd === "version") {
+      const cwd = process.cwd();
+      const flowPath = (0, import_fs5.existsSync)((0, import_path13.join)(cwd, "flow.js")) ? (0, import_path13.join)(cwd, "flow.js") : (0, import_path13.join)(cwd, "dist", "flow.js");
+      let version = "unknown";
+      if ((0, import_fs5.existsSync)(flowPath)) {
+        const content = (0, import_fs5.readFileSync)(flowPath, "utf-8");
+        const match = content.match(/\/\/ FLOWPILOT_VERSION:\s*(\d+\.\d+\.\d+)/);
+        if (match) version = match[1];
+      }
+      return "FlowPilot v" + version;
+    }
     switch (cmd) {
       case "init": {
         const force = rest.includes("--force");
@@ -4916,7 +5555,7 @@ var CLI = class {
         let out;
         if (md.trim()) {
           const data = await s.init(md, force);
-          out = `\u5DF2\u521D\u59CB\u5316\u5DE5\u4F5C\u6D41: ${data.name} (${data.tasks.length} \u4E2A\u4EFB\u52A1)`;
+          out = "\u5DF2\u521D\u59CB\u5316\u5DE5\u4F5C\u6D41: " + data.name + " (" + data.tasks.length + " \u4E2A\u4EFB\u52A1)";
         } else {
           const client = await (this.deps.promptSetupClient ?? promptSetupClient)();
           out = await s.setup(client);
@@ -4947,9 +5586,9 @@ var CLI = class {
           }
         }
         if (fileIdx >= 0 && rest[fileIdx + 1]) {
-          const filePath = (0, import_path12.resolve)(rest[fileIdx + 1]);
-          if ((0, import_path12.relative)(process.cwd(), filePath).startsWith("..")) throw new Error("--file \u8DEF\u5F84\u4E0D\u80FD\u8D85\u51FA\u9879\u76EE\u76EE\u5F55");
-          detail = (0, import_fs4.readFileSync)(filePath, "utf-8");
+          const filePath = (0, import_path13.resolve)(rest[fileIdx + 1]);
+          if ((0, import_path13.relative)(process.cwd(), filePath).startsWith("..")) throw new Error("--file \u8DEF\u5F84\u4E0D\u80FD\u8D85\u51FA\u9879\u76EE\u76EE\u5F55");
+          detail = (0, import_fs5.readFileSync)(filePath, "utf-8");
         } else if (rest.length > 1 && fileIdx < 0 && filesIdx < 0) {
           detail = rest.slice(1).join(" ");
         } else {
@@ -4971,9 +5610,9 @@ var CLI = class {
           }
         }
         if (fileIdx >= 0 && rest[fileIdx + 1]) {
-          const filePath = (0, import_path12.resolve)(rest[fileIdx + 1]);
-          if ((0, import_path12.relative)(process.cwd(), filePath).startsWith("..")) throw new Error("--file \u8DEF\u5F84\u4E0D\u80FD\u8D85\u51FA\u9879\u76EE\u76EE\u5F55");
-          detail = (0, import_fs4.readFileSync)(filePath, "utf-8");
+          const filePath = (0, import_path13.resolve)(rest[fileIdx + 1]);
+          if ((0, import_path13.relative)(process.cwd(), filePath).startsWith("..")) throw new Error("--file \u8DEF\u5F84\u4E0D\u80FD\u8D85\u51FA\u9879\u76EE\u76EE\u5F55");
+          detail = (0, import_fs5.readFileSync)(filePath, "utf-8");
         } else if (rest.length > 1 && fileIdx < 0 && filesIdx < 0) {
           detail = rest.slice(1).join(" ");
         } else {
@@ -5033,25 +5672,7 @@ var CLI = class {
     }
   }
 };
-var USAGE = `\u7528\u6CD5: node flow.js [--verbose] <command>
-  init [--force]       \u521D\u59CB\u5316\u5DE5\u4F5C\u6D41 (stdin\u4F20\u5165\u4EFB\u52A1markdown\uFF0C\u65E0stdin\u5219\u663E\u793A\u5BA2\u6237\u7AEF\u9009\u9879\u5E76\u63A5\u7BA1\u9879\u76EE)
-  next [--batch]       \u83B7\u53D6\u4E0B\u4E00\u4E2A\u5F85\u6267\u884C\u4EFB\u52A1 (--batch \u8FD4\u56DE\u6240\u6709\u53EF\u5E76\u884C\u4EFB\u52A1)
-  checkpoint <id>      \u8BB0\u5F55\u4EFB\u52A1\u5B8C\u6210 [--file <path> | stdin | \u5185\u8054\u6587\u672C] [--files f1 f2 ...]
-  adopt <id>           \u63A5\u7BA1\u4E2D\u65AD\u540E\u5F85\u63A5\u7BA1\u53D8\u66F4\u5E76\u8865 checkpoint [--file <path> | stdin | \u5185\u8054\u6587\u672C] [--files f1 f2 ...]
-  restart <id>         \u5728\u786E\u8BA4\u5E76\u5904\u7406\u5217\u51FA\u7684\u672C\u4EFB\u52A1\u53D8\u66F4\u540E\u5141\u8BB8\u4EFB\u52A1\u4ECE\u5934\u91CD\u505A
-  skip <id>            \u624B\u52A8\u8DF3\u8FC7\u4EFB\u52A1
-  review               \u6807\u8BB0code-review\u5DF2\u5B8C\u6210 (finish\u524D\u5FC5\u987B\u6267\u884C)
-  finish               \u667A\u80FD\u6536\u5C3E (\u9A8C\u8BC1+\u603B\u7ED3+\u56DE\u5230\u5F85\u547D\uFF0C\u9700\u5148review)
-  status               \u67E5\u770B\u5168\u5C40\u8FDB\u5EA6
-  resume               \u4E2D\u65AD\u6062\u590D
-  abort                \u4E2D\u6B62\u5DE5\u4F5C\u6D41\u5E76\u6E05\u7406 .workflow/ \u76EE\u5F55
-  rollback <id>        \u56DE\u6EDA\u5230\u6307\u5B9A\u4EFB\u52A1\u7684\u5FEB\u7167 (git revert + \u91CD\u7F6E\u540E\u7EED\u4EFB\u52A1)
-  evolve               \u63A5\u6536AI\u53CD\u601D\u7ED3\u679C\u5E76\u6267\u884C\u8FDB\u5316 (stdin\u4F20\u5165)
-  recall <\u5173\u952E\u8BCD>       \u67E5\u8BE2\u76F8\u5173\u8BB0\u5FC6
-  add <\u63CF\u8FF0>           \u8FFD\u52A0\u4EFB\u52A1 [--type frontend|backend|general]
-
-\u5168\u5C40\u9009\u9879:
-  --verbose            \u8F93\u51FA\u8C03\u8BD5\u65E5\u5FD7 (\u7B49\u540C FLOWPILOT_VERBOSE=1)`;
+var USAGE = "\u7528\u6CD5: node flow.js [--verbose] <command>\n  init [--force]       \u521D\u59CB\u5316\u5DE5\u4F5C\u6D41\n  next [--batch]       \u83B7\u53D6\u4E0B\u4E00\u4E2A\u5F85\u6267\u884C\u4EFB\u52A1\n  checkpoint <id>      \u8BB0\u5F55\u4EFB\u52A1\u5B8C\u6210\n  adopt <id>           \u63A5\u7BA1\u53D8\u66F4\n  restart <id>         \u4EFB\u52A1\u91CD\u505A\n  skip <id>            \u8DF3\u8FC7\u4EFB\u52A1\n  review               \u6807\u8BB0 review \u5B8C\u6210\n  finish               \u6536\u5C3E\n  status               \u67E5\u770B\u8FDB\u5EA6\n  resume               \u6062\u590D\n  abort                \u4E2D\u6B62\n  rollback <id>        \u56DE\u6EDA\n  evolve               \u53CD\u601D\n  recall <\u5173\u952E\u8BCD>        \u8BB0\u5FC6\u67E5\u8BE2\n  add <\u63CF\u8FF0>           \u8FFD\u52A0\u4EFB\u52A1\n  version              \u7248\u672C\n\n\u5168\u5C40\u9009\u9879:\n  --verbose            \u8C03\u8BD5\u65E5\u5FD7";
 
 // src/main.ts
 configureLogger(process.cwd());

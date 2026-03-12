@@ -50,6 +50,7 @@ cp FlowPilot目录/dist/flow.js  你的项目/
 cd 你的项目
 node flow.js init
 # 会确保 .workflow/、.flowpilot/、.claude/settings.json、.claude/worktrees/ 被写入 .gitignore（若缺失）
+# 选择 Claude Code 时，首次默认生成 CLAUDE.md；Codex / Cursor / Other 默认生成 AGENTS.md
 
 # 3. 启动你的客户端，直接描述需求
 claude --dangerously-skip-permissions
@@ -57,6 +58,8 @@ claude --dangerously-skip-permissions
 # Codex 可直接用：
 codex --yolo
 ```
+
+> 这轮“更像 Claude 的输出风格”升级只改表达和排版，不改任务调度、协议优先级、命令语义或 checkpoint 规则。
 
 > `--dangerously-skip-permissions` 会跳过所有权限确认弹窗，实现真正的全自动。不加的话每个操作都要你点确认。
 
@@ -109,9 +112,10 @@ codex --yolo
 
 如果工作区里仍有未归档变更，`resume` 现在会如实说明它们属于哪一类：
 - 工作流启动前就已经存在、恢复后仍保留的 baseline 未归档变更
-- 中断后待接管的新变更
-- 如果存在待接管变更，工作流会进入 `reconciling`，必须先 `adopt` 或在确认并处理列出的本任务变更后 `restart`
-- 如果缺少 dirty baseline，则会明确提示“无法证明这是干净重启”
+- 由显式 ownership 支撑的 task-owned 变更
+- 工作流期间新增但归属未明的变更（可能包含你的手动修改/删除，FlowPilot 不会自动恢复这些文件）
+- 如果存在待处理变更，工作流会进入 `reconciling`，必须先 `adopt` 或在确认并处理列出的本任务变更后 `restart`
+- 如果缺少 dirty baseline，则会明确提示“无法证明这是干净重启，也无法可靠区分用户操作与任务残留”
 
 如果想从历史对话列表里挑一个恢复：
 ```bash
@@ -154,6 +158,17 @@ node flow.js status
 ```
 
 或者直接问 CC："现在进度怎么样了？"
+
+`status` 现在会更强调用户一眼想看懂的事情：
+- 哪些已完成
+- 哪些正在进行
+- 哪些阻塞
+- 下一步该做什么
+
+如果子代理持续上报阶段，`status` 还会显示更直观的实时状态卡片，例如：
+- `分析中 / 实现中 / 验证中 / 阻塞中`
+- 最近活动时间
+- 最近一句进展摘要
 
 ## finish 会在什么时候拒绝最终提交
 
@@ -213,8 +228,9 @@ Windows 可直接使用目录中的 `.bat` / `.ps1` 脚本。
 
 - `flow.js`（你复制进项目的单文件工具）
 - instruction file：
-  - 新项目通常是 `AGENTS.md`
-  - 兼容旧项目时可能是 `CLAUDE.md`
+  - `Claude Code` 模式通常是 `CLAUDE.md`
+  - `Codex / Cursor / Other` 模式通常是 `AGENTS.md`
+  - 兼容旧项目时会继续复用原有 instruction file
   - `snow-cli` 模式下还可能有 `ROLE.md`
 - `.claude/settings.json`（如果是 FlowPilot 在 `Claude Code` 模式下生成的）
 - `.workflow/`（本地临时运行态）

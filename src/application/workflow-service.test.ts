@@ -133,7 +133,7 @@ describe('WorkflowService 集成测试', () => {
     expect(r?.task.id).toBe('001');
   });
 
-  it('resume会明确报告中断任务保留的待接管变更', async () => {
+  it('resume会把工作流期间新增但无ownership的变更标记为归属未明', async () => {
     const repo = new FsWorkflowRepository(dir);
     const changedFilesSpy = vi.spyOn(repo, 'listChangedFiles');
     changedFilesSpy.mockReturnValueOnce([]);
@@ -145,9 +145,10 @@ describe('WorkflowService 集成测试', () => {
 
     const msg = await svc.resume();
 
-    expect(msg).toContain('已暂停继续调度');
+    expect(msg).toContain('已暂停调度');
     expect(msg).toContain('node flow.js adopt 001');
-    expect(msg).toContain('已保留 1 个中断后待接管变更');
+    expect(msg).toContain('归属未明');
+    expect(msg).toContain('不会自动恢复这些文件');
     expect(msg).toContain('src/feature.ts');
   });
 
@@ -185,7 +186,29 @@ describe('WorkflowService 集成测试', () => {
     expect(data?.tasks.find(task => task.id === '001')?.status).toBe('done');
   });
 
-  it('restart 在残留未清理前拒绝重跑，清理后允许重新执行', async () => {
+  it('resume会把显式 ownership 支撑的残留改动展示为可接管而非归属未明', async () => {
+    const repo = new FsWorkflowRepository(dir);
+    vi.spyOn(repo, 'listChangedFiles')
+      .mockReturnValueOnce([])
+      .mockReturnValueOnce(['src/task-owned.ts']);
+    svc = new WorkflowService(repo, parseTasksMarkdown);
+
+    await svc.init(TASKS_MD);
+    await svc.next();
+    await writeFile(join(dir, '.workflow', 'owned-files.json'), JSON.stringify({
+      byTask: {
+        '001': ['src/task-owned.ts'],
+      },
+    }), 'utf-8');
+
+    const msg = await svc.resume();
+
+    expect(msg).toContain('已保留 1 个由显式 ownership 支撑的待接管变更');
+    expect(msg).toContain('src/task-owned.ts');
+    expect(msg).not.toContain('工作流期间新增但归属未明的变更');
+  });
+
+  it('restart 在存在归属未明变更时拒绝重跑，清理后允许重新执行', async () => {
     const repo = new FsWorkflowRepository(dir);
     const changedFilesSpy = vi.spyOn(repo, 'listChangedFiles');
     changedFilesSpy
@@ -199,7 +222,7 @@ describe('WorkflowService 集成测试', () => {
     await svc.next();
     await svc.resume();
 
-    await expect(svc.restart('001')).rejects.toThrow(/确认并处理.*本任务变更/);
+    await expect(svc.restart('001')).rejects.toThrow(/归属未明变更/);
     const msg = await svc.restart('001');
     expect(msg).toContain('任务 001 已确认从头重做');
 
@@ -221,7 +244,7 @@ describe('WorkflowService 集成测试', () => {
 
     expect(msg).toContain('工作流启动前已有 1 个未归档变更仍然保留');
     expect(msg).toContain('README.md');
-    expect(msg).not.toContain('中断后待接管变更');
+    expect(msg).not.toContain('归属未明');
   });
 
   it('resume会把无脏文件的恢复表述为干净重启', async () => {
@@ -253,11 +276,33 @@ describe('WorkflowService 集成测试', () => {
     const msg = await svc.resume();
 
     expect(msg).toContain('未找到 dirty baseline');
+    expect(msg).toContain('用户手动修改/删除');
     expect(msg).toContain('src/legacy.ts');
     expect(msg).not.toContain('干净重启');
   });
 
-  it('resume在 baseline 缺失但存在中断后待接管变更时仍进入 reconciling', async () => {
+  it('resume会把工作流期间用户手动删除的文件保守标记为归属未明', async () => {
+    await initGitRepo(dir);
+    await writeFile(join(dir, 'manual-delete.txt'), 'tracked before workflow\n', 'utf-8');
+    runGit(['add', '--', 'manual-delete.txt'], dir);
+    runGit(['commit', '-m', 'add manual-delete'], dir);
+
+    const repo = new FsWorkflowRepository(dir);
+    svc = new WorkflowService(repo, parseTasksMarkdown);
+
+    await svc.init(TASKS_MD);
+    await svc.next();
+    await rm(join(dir, 'manual-delete.txt'));
+
+    const msg = await svc.resume();
+
+    expect(msg).toContain('已暂停调度');
+    expect(msg).toContain('manual-delete.txt');
+    expect(msg).toContain('用户手动修改/删除');
+    expect(msg).toContain('不会自动恢复这些文件');
+  });
+
+  it('resume在 baseline 缺失但存在归属未明变更时仍进入 reconciling', async () => {
     const repo = new FsWorkflowRepository(dir);
     const changedFilesSpy = vi.spyOn(repo, 'listChangedFiles');
     changedFilesSpy.mockReturnValueOnce([]);
@@ -270,8 +315,9 @@ describe('WorkflowService 集成测试', () => {
 
     const msg = await svc.resume();
 
-    expect(msg).toContain('已暂停继续调度');
+    expect(msg).toContain('已暂停调度');
     expect(msg).toContain('node flow.js adopt 001');
+    expect(msg).toContain('归属未明');
     await expect(svc.next()).rejects.toThrow(/adopt|restart|skip/);
   });
 
@@ -540,7 +586,8 @@ describe('WorkflowService 集成测试', () => {
   it('setup 选择 Claude Code 时会生成 hooks', async () => {
     const msg = await svc.setup('claude');
     expect(msg).toContain('.claude/settings.json 已更新');
-    expect(await readFile(join(dir, 'AGENTS.md'), 'utf-8')).toContain('flowpilot:start');
+    expect(await readFile(join(dir, 'CLAUDE.md'), 'utf-8')).toContain('flowpilot:start');
+    await expect(readFile(join(dir, 'AGENTS.md'), 'utf-8')).rejects.toThrow();
     expect(await readFile(join(dir, '.claude', 'settings.json'), 'utf-8')).toContain('TaskCreate');
   });
 
@@ -895,7 +942,7 @@ describe('WorkflowService 集成测试', () => {
     expect((await svc.status())?.status).toBe('finishing');
   });
 
-  it('finish在 legacy 或外部删除 baseline 时不再死锁，而是显式降级完成', async () => {
+  it('finish在 legacy 或外部删除 baseline 时保留工作流并提示处理降级边界', async () => {
     const repo = new FsWorkflowRepository(dir);
     const changedFilesSpy = vi.spyOn(repo, 'listChangedFiles');
     changedFilesSpy.mockReturnValueOnce([]);
@@ -913,13 +960,13 @@ describe('WorkflowService 集成测试', () => {
     expect(msg).toContain('未找到 dirty baseline');
     expect(msg).toContain('未提交最终commit');
     expect(msg).toContain('src/legacy.ts');
-    expect(msg).toContain('工作流回到待命状态');
+    expect(msg).not.toContain('工作流回到待命状态');
     expect(commitSpy).not.toHaveBeenCalledWith('finish', expect.any(String), expect.any(String), expect.anything());
-    expect(clearAllSpy).toHaveBeenCalledTimes(1);
-    expect(await svc.status()).toBeNull();
+    expect(clearAllSpy).not.toHaveBeenCalled();
+    expect((await svc.status())?.status).toBe('finishing');
   });
 
-  it('finish在 baseline 缺失但工作区已清理时也会显式降级完成且不自动提交', async () => {
+  it('finish在 baseline 缺失但工作区已清理时也保留工作流并不自动提交', async () => {
     const repo = new FsWorkflowRepository(dir);
     const changedFilesSpy = vi.spyOn(repo, 'listChangedFiles');
     changedFilesSpy.mockReturnValueOnce([]);
@@ -937,16 +984,17 @@ describe('WorkflowService 集成测试', () => {
     expect(msg).toContain('未找到 dirty baseline');
     expect(msg).toContain('当前工作区无未归档变更');
     expect(msg).toContain('未提交最终commit');
-    expect(msg).toContain('工作流回到待命状态');
+    expect(msg).not.toContain('工作流回到待命状态');
     expect(commitSpy).not.toHaveBeenCalledWith('finish', expect.any(String), expect.any(String), expect.anything());
-    expect(clearAllSpy).toHaveBeenCalledTimes(1);
-    expect(await svc.status()).toBeNull();
+    expect(clearAllSpy).not.toHaveBeenCalled();
+    expect((await svc.status())?.status).toBe('finishing');
   });
 
-  it('finish在未提供文件时说明未提交最终commit但仍正常收尾', async () => {
+  it('finish在未提供文件时说明未提交最终commit并保留工作流', async () => {
     const repo = new FsWorkflowRepository(dir);
     mockChangedFiles(repo, []);
     mockCommitResult(repo, { status: 'skipped', reason: 'no-files' });
+    const clearAllSpy = vi.spyOn(repo, 'clearAll');
     vi.spyOn(repo, 'verify').mockReturnValue({ passed: true, scripts: ['npm test'] });
     svc = new WorkflowService(repo, parseTasksMarkdown);
     await completeWorkflow(svc);
@@ -956,12 +1004,40 @@ describe('WorkflowService 集成测试', () => {
     expect(msg).toContain('验证结果:');
     expect(msg).toContain('- 通过: npm test');
     expect(msg).toContain('未提交最终commit：未提供 --files，未自动提交');
-    expect(msg).toContain('工作流回到待命状态');
+    expect(msg).not.toContain('工作流回到待命状态');
     expect(msg).not.toContain('已提交最终commit');
+    expect(clearAllSpy).not.toHaveBeenCalled();
+    expect((await svc.status())?.status).toBe('finishing');
+  });
+
+  it('finish在 git 仓库中无待提交文件时会创建显式最终收尾提交并清理工作流', async () => {
+    await initGitRepo(dir);
+    const repo = new FsWorkflowRepository(dir);
+    mockChangedFiles(repo, []);
+    const clearAllSpy = vi.spyOn(repo, 'clearAll');
+    const repoCommitSpy = vi.spyOn(repo, 'commit');
+    vi.spyOn(repo, 'verify').mockReturnValue({ passed: true, scripts: ['npm test'] });
+    svc = new WorkflowService(repo, parseTasksMarkdown);
+    await completeWorkflow(svc);
+    await svc.review();
+
+    const beforeHead = runGit(['rev-parse', 'HEAD'], dir);
+    const msg = await svc.finish();
+    const afterHead = runGit(['rev-parse', 'HEAD'], dir);
+    const headMessage = runGit(['show', '--quiet', '--format=%B', 'HEAD'], dir);
+
+    expect(msg).toContain('已提交最终commit');
+    expect(msg).toContain('已回到待命状态');
+    expect(msg).not.toContain('未提交最终commit');
+    expect(afterHead).not.toBe(beforeHead);
+    expect(headMessage).toContain('task-finish: 集成测试');
+    expect(repoCommitSpy).not.toHaveBeenCalledWith('finish', expect.any(String), expect.any(String), []);
+    expect(clearAllSpy).toHaveBeenCalled();
     expect(await svc.status()).toBeNull();
   });
 
-  it('finish在 cleanup 后若 AGENTS.md 残留用户改动则拒绝最终提交', async () => {
+  it('finish在 cleanup 后若 AGENTS.md 残留用户改动则允许最终收尾并保留用户内容', async () => {
+    await initGitRepo(dir);
     const repo = new FsWorkflowRepository(dir);
     const changedFilesSpy = vi.spyOn(repo, 'listChangedFiles');
     changedFilesSpy.mockReturnValueOnce([]);
@@ -976,10 +1052,12 @@ describe('WorkflowService 集成测试', () => {
 
     const msg = await svc.finish();
 
-    expect(msg).toContain('拒绝最终提交');
-    expect(msg).toContain('AGENTS.md');
+    expect(msg).not.toContain('拒绝最终提交');
+    expect(msg).toContain('已提交最终commit');
+    expect(msg).toContain('已回到待命状态');
     expect(commitSpy).not.toHaveBeenCalledWith('finish', expect.any(String), expect.any(String), expect.anything());
-    expect((await svc.status())?.status).toBe('finishing');
+    expect(await readFile(join(dir, 'AGENTS.md'), 'utf-8')).toContain('User residue');
+    expect(await svc.status()).toBeNull();
   });
 
   it('finish在 cleanup 后若 .gitignore 残留用户改动则拒绝最终提交', async () => {
@@ -1014,7 +1092,6 @@ describe('WorkflowService 集成测试', () => {
     await writeFile(join(dir, '.claude', 'settings.json'), preWorkflowDirtyContent, 'utf-8');
 
     const repo = new FsWorkflowRepository(dir);
-    vi.spyOn(repo, 'commit').mockReturnValue({ status: 'skipped', reason: 'no-files' });
     vi.spyOn(repo, 'verify').mockReturnValue({ passed: true, scripts: ['npm test'] });
     svc = new WorkflowService(repo, parseTasksMarkdown);
 
@@ -1024,9 +1101,10 @@ describe('WorkflowService 集成测试', () => {
     const msg = await svc.finish();
 
     expect(msg).not.toContain('拒绝最终提交');
-    expect(msg).toContain('未提交最终commit：未提供 --files，未自动提交');
+    expect(msg).toContain('已提交最终commit');
+    expect(msg).toContain('已回到待命状态');
     expect(await readFile(join(dir, '.claude', 'settings.json'), 'utf-8')).toBe(preWorkflowDirtyContent);
-    expect((await svc.status())).toBeNull();
+    expect(await svc.status()).toBeNull();
   });
 
   it('finish在 ignored/untracked settings.json cleanup 后仍有 residue 时也会拒绝最终提交', async () => {
@@ -1097,12 +1175,13 @@ describe('WorkflowService 集成测试', () => {
     expect(JSON.parse(await readFile(settingsPath, 'utf-8'))).toEqual({ model: 'sonnet' });
   });
 
-  it('finish会对称清理由 setup 创建且内容仍完整匹配的 AGENTS.md、settings.json 和 .gitignore', async () => {
+  it('finish在 no-files 时仍会对称清理由 setup 创建且内容仍完整匹配的文件，但保留工作流待最终提交', async () => {
     const repo = new FsWorkflowRepository(dir);
     const changedFilesSpy = vi.spyOn(repo, 'listChangedFiles');
     changedFilesSpy.mockReturnValueOnce([]);
     changedFilesSpy.mockReturnValueOnce([]);
     mockCommitResult(repo, { status: 'skipped', reason: 'no-files' });
+    const clearAllSpy = vi.spyOn(repo, 'clearAll');
     vi.spyOn(repo, 'verify').mockReturnValue({ passed: true, scripts: ['npm test'] });
     svc = new WorkflowService(repo, parseTasksMarkdown);
 
@@ -1111,8 +1190,9 @@ describe('WorkflowService 集成测试', () => {
 
     await svc.finish();
 
-    expect(await svc.status()).toBeNull();
-    expect(await repo.loadProgress()).toBeNull();
+    expect(clearAllSpy).not.toHaveBeenCalled();
+    expect((await svc.status())?.status).toBe('finishing');
+    expect(await repo.loadProgress()).not.toBeNull();
     await expect(readFile(join(dir, 'AGENTS.md'), 'utf-8')).rejects.toThrow();
     await expect(readFile(join(dir, '.claude', 'settings.json'), 'utf-8')).rejects.toThrow();
     expect(await readFile(join(dir, '.gitignore'), 'utf-8')).toBe(LOCAL_STATE_GITIGNORE);
@@ -1153,10 +1233,19 @@ describe('WorkflowService 集成测试', () => {
 
   it('finish在git失败时保留工作流并提示手动提交', async () => {
     const repo = new FsWorkflowRepository(dir);
+    const changedFilesSpy = vi.spyOn(repo, 'listChangedFiles');
+    changedFilesSpy.mockReturnValueOnce([]);
+    changedFilesSpy.mockReturnValue(['src/main.ts']);
     mockCommitResult(repo, { status: 'failed', error: 'git hooks failed' });
     vi.spyOn(repo, 'verify').mockReturnValue({ passed: true, scripts: [] });
     svc = new WorkflowService(repo, parseTasksMarkdown);
-    await completeWorkflow(svc);
+    await svc.init(TASKS_MD);
+    await svc.next();
+    await svc.checkpoint('001', '表结构设计完成', ['src/main.ts']);
+    await svc.next();
+    await svc.checkpoint('002', '页面完成');
+    await svc.next();
+    await svc.checkpoint('003', '文档完成');
     await svc.review();
 
     const msg = await svc.finish();
@@ -1165,7 +1254,7 @@ describe('WorkflowService 集成测试', () => {
     expect(await svc.status()).not.toBeNull();
   });
 
-  it('finish输出进化摘要可观测性', async () => {
+  it('finish在最终 commit 未完成时不输出进化摘要', async () => {
     const repo = new FsWorkflowRepository(dir);
     mockChangedFiles(repo, []);
     mockCommitResult(repo, { status: 'skipped', reason: 'no-files' });
@@ -1176,14 +1265,12 @@ describe('WorkflowService 集成测试', () => {
 
     const msg = await svc.finish();
 
-    expect(msg).toContain('进化摘要:');
-    expect(msg).toContain('reflect: 已执行');
-    expect(msg).toContain('experiment: 未执行');
-    expect(msg).toContain('config变更: 否');
-    expect(msg).toContain('变更键: 无');
+    expect(msg).not.toContain('进化摘要:');
+    expect(msg).toContain('未提交最终commit');
+    expect((await svc.status())?.status).toBe('finishing');
   });
 
-  it('finish在无实验时也输出未执行和无配置变更', async () => {
+  it('finish在最终 commit 未完成时也不会执行进化步骤', async () => {
     const repo = new FsWorkflowRepository(dir);
     mockChangedFiles(repo, []);
     mockCommitResult(repo, { status: 'skipped', reason: 'no-files' });
@@ -1200,12 +1287,10 @@ describe('WorkflowService 集成测试', () => {
 
     const msg = await svc.finish();
 
-    expect(msg).toContain('进化摘要:');
-    expect(msg).toContain('reflect: 已执行');
-    expect(msg).toContain('experiment: 未执行');
-    expect(msg).toContain('config变更: 否');
-    expect(msg).toContain('变更键: 无');
-    expect(reflectSpy).toHaveBeenCalled();
+    expect(msg).not.toContain('进化摘要:');
+    expect(msg).toContain('未提交最终commit');
+    expect((await svc.status())?.status).toBe('finishing');
+    expect(reflectSpy).not.toHaveBeenCalled();
     expect(experimentSpy).not.toHaveBeenCalled();
   });
 

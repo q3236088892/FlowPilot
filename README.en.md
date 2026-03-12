@@ -9,7 +9,8 @@ When you come back, the code is written, tests have passed, and git commits are 
 
 > Update: FlowPilot now supports `Claude Code`, `Codex`, `Cursor`, `snow-cli`, and other clients. During `init`, you can directly choose the target client and generate the matching instruction file / setup extras.
 
-> Update: The built-in `AGENTS.md` / client-specific templates now include **response-style shaping**. They rein in the overly verbose default output common in GPT-style clients and make it closer to Claude-style communication: **conclusion first, details after, concise, direct, terminal-friendly** — while still enforcing parallelism, safety confirmation, and engineering discipline.
+> Update: The built-in instruction files / client-specific templates now include **response-style shaping**. They rein in the overly verbose default output common in GPT-style clients and make it closer to Claude-style communication: **conclusion first, details after, concise, direct, terminal-friendly** — while still enforcing parallelism, safety confirmation, and engineering discipline. FlowPilot's own terminal output is also moving toward stronger grouping, clearer status markers, and more explicit next-step hints.
+> This upgrade is **presentation-layer only**: friendlier wording, clearer grouping, and more legible terminal output. It does **not** change workflow scheduling, protocol priority, command semantics, or checkpoint rules.
 
 > Multi-client full-auto parallel switches:
 > - `Claude Code`: enable Agent Teams
@@ -109,6 +110,8 @@ You: Build an e-commerce system with user registration, product management, shop
 
 CC will automatically: decompose tasks → identify dependencies → dispatch sub-agents in parallel → write code → checkpoint → git commit → run build/test/lint → done.
 
+`flow finish` now performs real automatic verification instead of stopping at a best-effort probe. If the workflow root itself has no detectable scripts but contains exactly one recognizable child project (for example `FlowPilot/`), FlowPilot automatically descends into that child project and runs verification there; `vitest` test scripts are also normalized to `--run` so finish does not hang in watch mode.
+
 ## Core Advantages
 
 ### Unlimited Context — 100 Tasks Without Compact Loss
@@ -140,10 +143,10 @@ Close window, lose network, compact, CC crash — bring it on:
 ```
 New window → Say: continue task → flow resume
   ├─ no pending task-owned changes: reset unfinished tasks → continue
-  └─ pending task-owned changes detected: pause scheduling → adopt / after handling only the listed task-owned changes restart → continue
+  └─ pending worktree changes detected: pause scheduling → adopt / after handling only the listed task-owned changes restart → continue
 ```
 
-All state persisted in files, independent of conversation history. Even if 3 sub-agents are interrupted simultaneously during parallel execution, FlowPilot will not blindly re-dispatch them when pending task-owned changes exist; it pauses and requires reconciliation first.
+All state persisted in files, independent of conversation history. Even if 3 sub-agents are interrupted simultaneously during parallel execution, FlowPilot will not blindly re-dispatch them when worktree changes remain; if ownership is ambiguous, it pauses and requires manual review instead of nudging you toward a whole-file `git restore`.
 
 ### Iterative Review — Run Another Round, Keep Improving
 
@@ -176,6 +179,24 @@ Finalization phase (optional):
 | Reflect | End of finish | LLM or rule-based analysis of workflow stats → findings + experiments |
 | Experiment | End of finish | Auto-adjust config params and protocol templates, save full snapshots |
 | Review | During review | Compare metrics before/after evolution, auto-rollback if degraded, check config integrity |
+
+### Final Summary Before Cleanup
+
+Before `flow finish` deletes the temporary workflow directory, it now does two things first:
+
+1. Prints a final workflow summary to the terminal
+2. Writes the same summary to `.workflow/final-summary.md`, then proceeds with cleanup
+
+The summary lists every task with explicit status markers:
+
+```text
+[x] done
+[-] skipped
+[!] failed
+[ ] incomplete
+```
+
+This way the user sees the full outcome immediately, and the workflow can still verify the "summarize first, clear later" ordering before `.workflow/` is removed. Also note the stricter shutdown rule: without `flow review`, `flow finish` does not end the workflow; even after review, cleanup only happens after the final commit truly succeeds.
 
 Evolution results directly affect workflow behavior:
 
@@ -232,14 +253,14 @@ Client-side parallel / auto-run switches:
   - No single standard exists; self-test multi-agent / auto-run behavior first
 
 In setup mode, `node flow.js init` now shows direct client options:
-- `Claude Code`: generates `AGENTS.md` + `.claude/settings.json`
+- `Claude Code`: generates `CLAUDE.md` + `.claude/settings.json`
 - `Codex`: generates `AGENTS.md` with extra Codex-specific enhancement rules
 - `Cursor` / `Other`: generate the generic `AGENTS.md`
 - `snow-cli`: generates `AGENTS.md` + `ROLE.md` with identical content
 
 Missing plugins are still reported in the output.
 
-Setup/init changes to the instruction file (new projects default to `AGENTS.md`, existing `CLAUDE.md` projects remain compatible), `.claude/settings.json`, and `.gitignore` follow ownership-based cleanup: FlowPilot only removes what it created or injected, and `flow finish` refuses the final commit if user residue still remains afterward.
+Setup/init changes to the instruction file (`Claude Code` now defaults to `CLAUDE.md`, `Codex / Cursor / Other` default to `AGENTS.md`, and legacy projects keep their existing file), `.claude/settings.json`, and `.gitignore` follow ownership-based cleanup: FlowPilot only removes what it created or injected, never auto-restores your manual edits, and `flow finish` stays in `finishing` if genuine user residue still remains afterward instead of misclassifying those edits as disposable workflow residue.
 
 By default, FlowPilot also ensures these local-only paths are ignored in the repo `.gitignore`: `.workflow/` (local transient runtime state), `.flowpilot/` (local persistent product state), `.claude/settings.json` (local integration state), and `.claude/worktrees/` (local worktree directory). It does not ignore the entire `.claude/` directory.
 
@@ -257,7 +278,7 @@ npm run test:run
 cp dist/flow.js /your/project/
 cd /your/project
 
-# Initialize (shows client options; new projects default to AGENTS.md)
+# Initialize (shows client options and generates the matching instruction file)
 node flow.js init
 
 # Launch CC in fully automated mode, describe your requirements, everything else is automatic
@@ -281,7 +302,7 @@ codex --yolo
 - `Cursor`: reopen the project and continue in the existing chat or a new one
 - `snow-cli` / other clients: reopen the project, restore or start a new session, then say "continue task"
 
-If the worktree still has unarchived changes when resuming, `resume` explicitly tells you which changes predate the workflow, which ones are pending task-owned changes left by interrupted tasks, and whether the dirty baseline is missing.
+If the worktree still has unarchived changes when resuming, `resume` explicitly tells you which changes predate the workflow, which ones are explicitly owned task changes, which ones are ownership-ambiguous additions that may include manual user edits/deletions, and whether the dirty baseline is missing.
 
 ## Architecture Overview
 
@@ -375,7 +396,7 @@ node flow.js next [--batch]       # Get next/all parallelizable tasks
 node flow.js checkpoint <id>      # Record task completion (stdin/--file/inline) [--files f1 f2 ...]
 node flow.js skip <id>            # Manually skip a task
 node flow.js review               # Mark code-review as done + evolution self-healing check
-node flow.js finish               # Smart finalization (verify+summarize+final commit only when boundary is safe)
+node flow.js finish               # Smart finalization (verify+summarize; the workflow stays active until review is done and the final commit succeeds)
 node flow.js status               # View global progress
 node flow.js resume               # Interruption recovery
 node flow.js add <desc> [--type]  # Add task (frontend/backend/general)
@@ -392,7 +413,7 @@ Companion npm scripts:
 ```
 node flow.js init
        ↓
-  Protocol embedded in the instruction file (AGENTS.md by default for new projects, CLAUDE.md for legacy repos) + client-specific setup extras when selected
+  Protocol embedded in the instruction file (`CLAUDE.md` by default for Claude Code, `AGENTS.md` for Codex / Cursor / Other, legacy repos keep their existing file) + client-specific setup extras when selected
        ↓
   User describes requirements / provides dev docs
        ↓                          ← Everything below is fully automated, no human intervention
@@ -410,16 +431,16 @@ node flow.js init
                    ↓
               flow evolve (optional, CC deep reflection)
                    ↓
-              flow finish ──→ Verification passed → Final commit → idle
+              flow finish ──→ Verification passed + final commit succeeded → idle
 ```
 
 ## Error Handling
 
 - **Task failure** — Auto-retry 3 times, still failing after 3 → mark `failed` and skip
 - **Cascade skip** — Downstream tasks depending on failed tasks auto-marked `skipped`
-- **Interruption recovery** — clean interruptions reset `active` tasks back to `pending`; when interrupted task-owned changes exist, the workflow enters `reconciling` and requires `adopt`, or handling only the listed task-owned changes before `restart`, before any next task can be dispatched
+- **Interruption recovery** — clean interruptions reset `active` tasks back to `pending`; when workflow-period changes remain, the workflow enters `reconciling`. Only the listed task-owned changes are safe for `adopt` / `restart`; ownership-ambiguous files must be reviewed manually and must not be cleared with a whole-file `git restore`
 - **Verification failure** — `flow finish` reports error, dispatch sub-agent to fix, retry finish
-- **Final commit refusal** — after verify/review, `flow finish` also checks the dirty baseline, checkpoint-owned files, and cleanup results for the instruction file (`AGENTS.md`, or legacy `CLAUDE.md`) / `.claude/settings.json` / `.gitignore`; any unsafe boundary causes an explicit refusal with the file list
+- **Final commit refusal** — after verify/review, `flow finish` also checks the dirty baseline, checkpoint-owned files, and cleanup results for the instruction file (`AGENTS.md`, or legacy `CLAUDE.md`) / `.claude/settings.json` / `.gitignore`; any unsafe boundary, or any non-success final commit outcome, causes an explicit refusal and keeps the workflow active with the next-step guidance. Manual user edits are treated as user-owned/baseline changes: FlowPilot does not auto-restore them and should not classify them as task residue
 - **Loop detection** — Three-strategy defense (repeated failures/ping-pong/global circuit breaker), auto-injects warnings into next task
 - **Health check** — Active task timeout (>30min) alerts, memory bloat (>100 entries) auto-compaction
 - **Evolution rollback** — If experiments degrade metrics, `review` auto-rolls back to pre-experiment snapshot
@@ -500,8 +521,9 @@ If you no longer want FlowPilot in a project, remove the files it copied in or g
 
 - `flow.js` (the single-file tool you copied into the project)
 - the instruction file:
-  - usually `AGENTS.md` for new projects
-  - possibly `CLAUDE.md` for legacy-compatible setups
+  - usually `CLAUDE.md` in `Claude Code` mode
+  - usually `AGENTS.md` in `Codex / Cursor / Other` mode
+  - the existing instruction file is reused for legacy-compatible setups
   - `ROLE.md` as well in `snow-cli` mode
 - `.claude/settings.json` (if FlowPilot generated it in `Claude Code` mode)
 - `.workflow/` (local transient runtime state)

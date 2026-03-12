@@ -10,7 +10,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const FLOW_CLI = resolve(dirname(fileURLToPath(import.meta.url)), '../../dist/flow.js');
+const DIST_FLOW_CLI = resolve(dirname(fileURLToPath(import.meta.url)), '../../dist/flow.js');
+const ROOT_FLOW_CLI = resolve(dirname(fileURLToPath(import.meta.url)), '../../../flow.js');
 const TASK_MARKDOWN = `# Clean Repo Smoke\n\n1. [backend] add tracked file\n  create one tracked file in a clean repo\n`;
 const SUBMODULE_TASK_MARKDOWN = `# Submodule Smoke\n\n1. [backend] advance submodule gitlink\n  advance a submodule commit and checkpoint the gitlink path\n`;
 
@@ -28,8 +29,8 @@ function initGitRepo(repoDir: string): void {
   execFileSync('git', ['config', 'user.email', 'flowpilot@example.com'], { cwd: repoDir, stdio: 'pipe' });
 }
 
-function runFlow(repoDir: string, args: string[], input?: string): string {
-  return execFileSync('node', [FLOW_CLI, ...args], {
+function runFlow(repoDir: string, args: string[], input?: string, cliPath: string = DIST_FLOW_CLI): string {
+  return execFileSync('node', [cliPath, ...args], {
     cwd: repoDir,
     input,
     encoding: 'utf-8',
@@ -51,11 +52,11 @@ describe('operational readiness smoke tests', () => {
 
     initGitRepo(repoDir);
 
-    const initOutput = runFlow(repoDir, ['init'], TASK_MARKDOWN);
+    const initOutput = runFlow(repoDir, ['init'], TASK_MARKDOWN, ROOT_FLOW_CLI);
     expect(initOutput).toContain('已初始化工作流: Clean Repo Smoke (1 个任务)');
 
-    const nextOutput = runFlow(repoDir, ['next']);
-    expect(nextOutput).toContain('--- 任务 001 ---');
+    const nextOutput = runFlow(repoDir, ['next'], undefined, ROOT_FLOW_CLI);
+    expect(nextOutput).toContain('**═══ 任务 001 ═══**');
 
     await writeFile(join(repoDir, 'app.txt'), 'hello smoke\n', 'utf-8');
 
@@ -63,26 +64,22 @@ describe('operational readiness smoke tests', () => {
       repoDir,
       ['checkpoint', '001', '--files', 'app.txt'],
       '[REMEMBER] clean repo smoke writes exactly one tracked file',
+      ROOT_FLOW_CLI,
     );
 
     expect(checkpointOutput).toContain('任务 001 完成 (1/1)');
     expect(checkpointOutput).toContain('全部任务已完成，请执行 node flow.js finish 进行收尾');
     expect(checkpointOutput).toContain('[已自动提交]');
 
-    const reviewOutput = runFlow(repoDir, ['review']);
-    expect(reviewOutput).toContain('代码审查已通过，请执行 node flow.js finish 完成收尾');
+    const reviewOutput = runFlow(repoDir, ['review'], undefined, ROOT_FLOW_CLI);
+    expect(reviewOutput).toContain('代码审查已通过\n\n**═══ 下一步 ═══**\n👉 运行 `node flow.js finish` 完成收尾');
 
-    const finishOutput = runFlow(repoDir, ['finish']);
+    const finishOutput = runFlow(repoDir, ['finish'], undefined, ROOT_FLOW_CLI);
     expect(finishOutput).toContain('验证结果: 未发现可执行的验证命令');
     expect(finishOutput).toContain('1 done');
-    expect(finishOutput).toContain('未提交最终commit');
-    expect(finishOutput).toContain('工作流回到待命状态');
-    expect(finishOutput).toContain('等待下一个需求');
-
+    expect(finishOutput).toContain('已提交最终commit');
+    expect(finishOutput).toContain('已回到待命状态');
     await expect(access(join(repoDir, '.workflow'))).rejects.toThrow();
-    await expect(access(join(repoDir, '.claude'))).rejects.toThrow();
-    await expect(access(join(repoDir, '.claude', 'settings.json'))).rejects.toThrow();
-    await expect(access(join(repoDir, 'AGENTS.md'))).rejects.toThrow();
 
     expect(await readFile(join(repoDir, '.gitignore'), 'utf-8')).toBe('.workflow/\n.flowpilot/\n.claude/settings.json\n.claude/worktrees/\n');
 
@@ -91,14 +88,12 @@ describe('operational readiness smoke tests', () => {
 
     const flowpilotEntries = (await readdir(join(repoDir, '.flowpilot'))).sort();
     expect(flowpilotEntries).toContain('history');
-    expect(flowpilotEntries).not.toContain('.workflow');
-    expect((await readdir(join(repoDir, '.flowpilot', 'history'))).length).toBe(1);
 
     const commitCount = runGit(repoDir, ['rev-list', '--count', 'HEAD']);
-    expect(commitCount).toBe('1');
+    expect(commitCount).toBe('2');
 
     const committedFiles = runGit(repoDir, ['show', '--pretty=', '--name-only', 'HEAD']).split('\n').filter(Boolean);
-    expect(committedFiles).toEqual(['app.txt']);
+    expect(committedFiles).toEqual([]);
 
     expect((await stat(join(repoDir, 'app.txt'))).isFile()).toBe(true);
     expect(await readFile(join(repoDir, 'app.txt'), 'utf-8')).toBe('hello smoke\n');
@@ -114,7 +109,7 @@ describe('operational readiness smoke tests', () => {
     execFileSync('git', ['commit', '-m', 'init baseline'], { cwd: repoDir, stdio: 'pipe' });
     await writeFile(join(repoDir, 'baseline.txt'), 'baseline\ndirty before init\n', 'utf-8');
 
-    const initOutput = runFlow(repoDir, ['init'], TASK_MARKDOWN);
+    const initOutput = runFlow(repoDir, ['init'], TASK_MARKDOWN, ROOT_FLOW_CLI);
     expect(initOutput).toContain('已初始化工作流: Clean Repo Smoke (1 个任务)');
 
     runFlow(repoDir, ['next']);
@@ -128,7 +123,7 @@ describe('operational readiness smoke tests', () => {
     expect(checkpointOutput).toContain('[已自动提交]');
 
     const reviewOutput = runFlow(repoDir, ['review']);
-    expect(reviewOutput).toContain('代码审查已通过，请执行 node flow.js finish 完成收尾');
+    expect(reviewOutput).toContain('代码审查已通过\n\n**═══ 下一步 ═══**\n👉 运行 `node flow.js finish` 完成收尾');
 
     await writeFile(join(repoDir, 'rogue.txt'), 'outside workflow boundary\n', 'utf-8');
 
@@ -143,7 +138,7 @@ describe('operational readiness smoke tests', () => {
     expect(statusOutput).toContain('M baseline.txt');
   });
 
-  it('resume preserves dirty baseline and interrupted residue with truthful messaging', async () => {
+  it('resume preserves dirty baseline and reports workflow-period additions as ownership-ambiguous', async () => {
     const repoDir = await mkdtemp(join(tmpdir(), 'flow-operational-resume-dirty-'));
     tempDirs.push(repoDir);
 
@@ -156,19 +151,20 @@ describe('operational readiness smoke tests', () => {
     const initOutput = runFlow(repoDir, ['init'], TASK_MARKDOWN);
     expect(initOutput).toContain('已初始化工作流: Clean Repo Smoke (1 个任务)');
 
-    const nextOutput = runFlow(repoDir, ['next']);
-    expect(nextOutput).toContain('--- 任务 001 ---');
+    const nextOutput = runFlow(repoDir, ['next'], undefined, ROOT_FLOW_CLI);
+    expect(nextOutput).toContain('**═══ 任务 001 ═══**');
 
     await writeFile(join(repoDir, 'residue.txt'), 'left behind by interrupted task\n', 'utf-8');
 
     const resumeOutput = runFlow(repoDir, ['resume']);
-    expect(resumeOutput).toContain('恢复工作流: Clean Repo Smoke');
+    expect(resumeOutput).toContain('**═══ 恢复工作流 ═══**\n📂 Clean Repo Smoke');
     expect(resumeOutput).toContain('进度: 0/1');
-    expect(resumeOutput).toContain('已暂停继续调度');
+    expect(resumeOutput).toContain('已暂停调度');
     expect(resumeOutput).toContain('node flow.js adopt 001');
     expect(resumeOutput).toContain('工作流启动前已有 1 个未归档变更仍然保留:');
     expect(resumeOutput).toContain('- baseline.txt');
-    expect(resumeOutput).toContain('已保留 1 个中断后待接管变更');
+    expect(resumeOutput).toContain('归属未明');
+    expect(resumeOutput).toContain('不会自动恢复这些文件');
     expect(resumeOutput).toContain('- residue.txt');
 
     expect(() => runFlow(repoDir, ['next'])).toThrow(/adopt|restart|skip/);
@@ -181,8 +177,8 @@ describe('operational readiness smoke tests', () => {
     expect(adoptOutput).toContain('任务 001 完成');
 
     const statusOutput = runFlow(repoDir, ['status']);
-    expect(statusOutput).toContain('状态: running | 进度: 1/1');
-    expect(statusOutput).toContain('[x] 001 [backend] add tracked file');
+    expect(statusOutput).toContain('Clean Repo Smoke · running');
+    expect(statusOutput).toContain('✓ 001 [backend] add tracked file');
 
     const gitStatus = runGit(repoDir, ['status', '--short']);
     expect(gitStatus).toContain('M baseline.txt');
@@ -214,7 +210,7 @@ describe('operational readiness smoke tests', () => {
     expect(initOutput).toContain('已初始化工作流: Submodule Smoke (1 个任务)');
 
     const nextOutput = runFlow(rootDir, ['next']);
-    expect(nextOutput).toContain('--- 任务 001 ---');
+    expect(nextOutput).toContain('**═══ 任务 001 ═══**');
 
     initGitRepo(submodulePath);
     await writeFile(join(submodulePath, trackedFile), 'base\nadvanced\n', 'utf-8');

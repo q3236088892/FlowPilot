@@ -42,12 +42,14 @@ node flow.js init
 
 This auto-generates:
 - It first shows client options, then generates according to the selected client:
-  - `AGENTS.md` — default instruction file for new projects
-  - `CLAUDE.md` — reused only for legacy projects that already have it
+  - `CLAUDE.md` — default instruction file in `Claude Code` mode (legacy projects remain compatible)
+  - `AGENTS.md` — default instruction file in `Codex / Cursor / Other` mode
   - `ROLE.md` — additionally generated only for `snow-cli`, with the same content as `AGENTS.md`
   - `.claude/settings.json` — generated only for `Claude Code`
+- `status / next / finish / review / init` also adopt a friendlier terminal style with stronger grouping, status markers, next-step hints, and richer live status cards
 - `.workflow/` directory — local transient runtime state
 - local-state `.gitignore` rules when missing — by default `.workflow/`, `.flowpilot/`, `.claude/settings.json`, and `.claude/worktrees/`
+- These output-style upgrades are **presentation-layer only**: they do not change workflow scheduling, protocol priority, command syntax, checkpoint rules, or state-machine semantics
 
 ### Step 3: Describe Your Requirements
 
@@ -97,9 +99,10 @@ Client guidance:
 
 If the worktree still has unarchived changes, `resume` also reports the real boundary state instead of using a generic success message:
 - baseline unarchived changes that existed before the workflow and are still present
-- pending task-owned changes left behind by interrupted tasks and intentionally preserved
-- a conservative warning when the dirty baseline is missing and FlowPilot can no longer prove this is a clean restart
-- when pending task-owned changes exist, the workflow enters `reconciling` and requires `adopt` or restart after handling only the listed task-owned changes
+- explicitly owned task changes that are safe to adopt as task residue
+- ownership-ambiguous additions made during the workflow window, which may include manual user edits/deletions and will not be auto-restored by FlowPilot
+- a conservative warning when the dirty baseline is missing and FlowPilot can no longer prove this is a clean restart or distinguish user changes from task residue
+- when pending worktree changes exist, the workflow enters `reconciling` and requires `adopt`, or restart only after handling the listed task-owned changes
 
 ## Command Reference
 
@@ -112,16 +115,55 @@ If the worktree still has unarchived changes, `resume` also reports the real bou
 | `node flow.js next --batch` | Get all dependency-parallel tasks suitable for batch dispatch |
 | `node flow.js checkpoint <id>` | Mark task complete (stdin/--file/inline) [--files f1 f2 ...] |
 | `node flow.js adopt <id>` | Adopt pending task-owned changes and record a checkpoint |
-| `node flow.js restart <id>` | Allow a task to restart after the listed task-owned changes are handled |
+| `node flow.js restart <id>` | Allow a task to restart after the listed task-owned changes are handled; ownership-ambiguous files require manual review |
 | `node flow.js skip <id>` | Skip a task |
 | `node flow.js resume` | Interruption recovery (enters reconciling when needed) |
 | `node flow.js review` | Mark code-review as done (required before finish) |
-| `node flow.js finish` | Smart finalization (verify+report passed/skipped steps+refuse unsafe final commits, requires review) |
+| `node flow.js finish` | Smart finalization (run auto verification and print the final task summary; the workflow does not end until review is done and the final commit succeeds) |
 | `node flow.js add <desc> [--type T]` | Add new task (argument order flexible) |
 | `node flow.js recall <keyword>` | Search historical memories (BM25 + MMR + temporal decay) |
 | `node flow.js evolve` | Accept AI reflection results and apply evolution (stdin) |
 
 > Note: During normal use you don't need to run these commands manually — CC calls them automatically per protocol.
+
+### What `status` Shows Now
+
+`node flow.js status` is no longer just a flat list of task ids. It aims to surface the user's real question first:
+
+```text
+**Current Status**
+Done 2/4 | 1 active | 1 blocked
+
+**Task Progress**
+[x] 001 Fix entrypoint
+[>] 002 Implementing | updated 8s ago | running tests
+[!] 003 Blocked | waiting for manual confirmation
+[ ] 004 Pending
+
+**Next**
+- Resolve the blocker in 003
+- Then continue finish
+```
+
+When sub-agents continuously report their stage, FlowPilot can also show:
+- `Analyzing / Implementing / Verifying / Blocked`
+- last activity time
+- a short recent progress note
+- heartbeat-based stuck warnings
+
+### What `finish` Does Now
+
+`node flow.js finish` now has a clearer shutdown order:
+
+1. Run automatic verification first  
+   It prefers `verify.commands` from `.flowpilot/config.json` / `.workflow/config.json`; if the current directory has no detectable scripts but contains exactly one recognizable child project, FlowPilot automatically descends into that child project and verifies there. `vitest` is normalized to `--run` to avoid watch-mode hangs.
+2. Print the final workflow summary  
+   The terminal output includes the full task list with `[x] / [-] / [!] / [ ]` markers for done, skipped, failed, and incomplete tasks.
+3. Write `.workflow/final-summary.md` before deleting `.workflow/`  
+   This preserves the "summarize first, clear later" ordering and leaves a summary file in place until cleanup actually happens.
+4. Only after `review` is complete and the final commit actually succeeds does FlowPilot clean up and return to idle
+
+If verification fails, `finish` aborts finalization and asks you to fix the issue first. Even after verification passes, FlowPilot keeps the workflow alive until `review` is done and the final commit truly succeeds; if the final commit is skipped or degraded, `.workflow/` is preserved and the next step is explained explicitly.
 
 ## Task Input Format
 
@@ -152,7 +194,7 @@ Format rules:
 ```
 your-project/
 ├── flow.js                    # The tool itself (copied by you)
-├── AGENTS.md                  # Default instruction file for new projects
+├── CLAUDE.md / AGENTS.md      # Client-selected instruction file
 ├── ROLE.md                    # Extra file for snow-cli only
 └── .workflow/
     ├── progress.md            # Task status table (core memory)
@@ -169,7 +211,7 @@ your-project/
 ```
 User describes development requirements
     ↓
-The client reads the instruction file (AGENTS.md by default, CLAUDE.md for legacy repos) → Finds embedded protocol → Enters dispatch mode
+The client reads the instruction file (`CLAUDE.md` by default for Claude Code, `AGENTS.md` for Codex / Cursor / Other, legacy repos keep their existing file) → Finds embedded protocol → Enters dispatch mode
     ↓
 flow resume → Check for unfinished workflow
     ↓
@@ -302,8 +344,9 @@ flow next --batch → Re-dispatch all 3 tasks in parallel (when write boundaries
 At the same time, resume now reports the dirty-worktree state truthfully:
 - `Current worktree has no pending task-owned changes; this resume is a clean restart`
 - `N unarchived changes from before workflow start are still preserved`
-- `Preserved N pending task-owned changes left behind by interrupted tasks`
-- `Dirty baseline missing; cannot reliably distinguish pre-existing changes from interrupted-task residue`
+- `Preserved N explicitly owned task changes that can be adopted as residue`
+- `Found N workflow-period additions with ambiguous ownership (may include manual user edits/deletions; FlowPilot will not auto-restore these files)`
+- `Dirty baseline missing; cannot reliably distinguish pre-existing changes, interrupted-task residue, and manual user edits/deletions`
 
 These lines are boundary diagnostics, not errors. Their job is to prevent a dirty worktree from being mislabeled as perfectly clean.
 
@@ -381,7 +424,7 @@ The most common causes are:
 2. leftover user changes in the instruction file (`AGENTS.md`, or legacy `CLAUDE.md`), `.claude/settings.json`, or `.gitignore` after cleanup
 3. a missing dirty baseline, so FlowPilot can no longer prove the workflow boundary is safe
 
-When this happens, FlowPilot stays in `finishing` state and lists the suspicious files instead of committing on your behalf.
+When this happens, FlowPilot stays in `finishing` state and lists the suspicious files instead of committing on your behalf. As long as the final commit has not truly succeeded, the workflow is not cleared. In instruction files / `.claude/settings.json` / `.gitignore`, these leftovers should be interpreted as user-owned or baseline edits first: FlowPilot will not auto-restore that content, and those manual edits must not be treated as disposable workflow residue.
 
 **Q: Should .workflow be committed to git?**
 Usually no. `.workflow/` is local transient runtime state, `flow finish` removes it on successful completion, and the default `.gitignore` policy ignores it.
@@ -391,7 +434,7 @@ They follow ownership-based symmetric cleanup:
 - if FlowPilot created them during setup/init and the contents still exactly match the injected content, finish deletes them or restores them precisely
 - if they already existed, finish removes only the FlowPilot-owned injected portion and keeps your original content
 - the FlowPilot-owned `.gitignore` rules cover `.workflow/`, `.flowpilot/`, `.claude/settings.json`, and `.claude/worktrees/`, but do not ignore the entire `.claude/` directory
-- if user residue still remains after cleanup, finish refuses the final commit and names the file
+- if user residue still remains after cleanup, finish refuses the final commit and names the file; those changes are treated as user-owned and must be resolved manually rather than auto-restored
 
 **Q: Will summaries get too long with many tasks?**
 No. After 10+ completed tasks, summaries auto-compress by type, keeping only the 3 most recent task names per group.
@@ -437,8 +480,9 @@ If you no longer want FlowPilot in a project, remove the files it copied in or g
 
 - `flow.js` (the single-file tool you copied into the project)
 - the instruction file:
-  - usually `AGENTS.md` for new projects
-  - possibly `CLAUDE.md` for legacy-compatible setups
+  - usually `CLAUDE.md` in `Claude Code` mode
+  - usually `AGENTS.md` in `Codex / Cursor / Other` mode
+  - the existing instruction file is reused for legacy-compatible setups
   - `ROLE.md` as well in `snow-cli` mode
 - `.claude/settings.json` (if FlowPilot generated it in `Claude Code` mode)
 - `.workflow/` (local transient runtime state)
@@ -550,8 +594,8 @@ finish(verify) → review(code-review) → evolve → finish(verify again)
 Detailed flow:
 1. `flow finish` — runs verification and prints each step as passed or skipped under `Verification result:`
 2. On pass, prompts for code-review → `flow review` marks it done
-3. `flow finish` again → runs cleanup first, then checks the dirty baseline and owned-file boundary; only a safe boundary can proceed to reflect + experiment + final commit
-4. If verification fails, or if unowned dirty files / leftover user changes remain in setup-owned files, finish refuses the final commit; fix the issue and run finish again until verify + review + ownership boundary all pass
+3. `flow finish` again → checks the dirty baseline and owned-file boundary, then attempts the final commit; only a real final commit success can proceed to cleanup, reflect + experiment, and idle
+4. If verification fails, or if unowned dirty files / leftover user changes remain in setup-owned files, or if the final commit is skipped / degraded, finish refuses to end the workflow; fix the issue and run finish again until verify + review + ownership boundary + final commit all pass
 
 ### Evolution Result Consumption
 
