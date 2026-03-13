@@ -5856,6 +5856,9 @@ var CLI = class {
         return await s.recall(query);
       }
       case "add": {
+        if (rest.includes("--help") || rest.includes("-h")) {
+          return ADD_USAGE;
+        }
         const typeIdx = rest.indexOf("--type");
         const rawType = typeIdx >= 0 && rest[typeIdx + 1] || "general";
         const type = VALID_TASK_TYPES.has(rawType) ? rawType : "general";
@@ -5869,6 +5872,7 @@ var CLI = class {
   }
 };
 var USAGE = "\u7528\u6CD5: node flow.js [--verbose] <command>\n  init [--force]       \u521D\u59CB\u5316\u5DE5\u4F5C\u6D41\n  next [--batch]       \u83B7\u53D6\u4E0B\u4E00\u4E2A\u5F85\u6267\u884C\u4EFB\u52A1\n  checkpoint <id>      \u8BB0\u5F55\u4EFB\u52A1\u5B8C\u6210\n  adopt <id>           \u63A5\u7BA1\u53D8\u66F4\n  restart <id>         \u4EFB\u52A1\u91CD\u505A\n  skip <id>            \u8DF3\u8FC7\u4EFB\u52A1\n  review               \u6807\u8BB0 review \u5B8C\u6210\n  finish               \u6536\u5C3E\n  status               \u67E5\u770B\u8FDB\u5EA6\n  resume               \u6062\u590D\n  abort                \u4E2D\u6B62\n  rollback <id>        \u56DE\u6EDA\n  evolve               \u53CD\u601D\n  recall <\u5173\u952E\u8BCD>        \u8BB0\u5FC6\u67E5\u8BE2\n  add <\u63CF\u8FF0>           \u8FFD\u52A0\u4EFB\u52A1\n  version              \u7248\u672C\n\n\u5168\u5C40\u9009\u9879:\n  --verbose            \u8C03\u8BD5\u65E5\u5FD7";
+var ADD_USAGE = '\u7528\u6CD5: node flow.js add <\u63CF\u8FF0> [--type frontend|backend|general]\n\u793A\u4F8B:\n  node flow.js add "\u4FEE\u590D\u652F\u4ED8\u56DE\u8C03\u91CD\u8BD5"\n  node flow.js add "\u8865\u4E0A\u7EBF\u68C0\u67E5\u9879" --type backend';
 
 // src/main.ts
 configureLogger(process.cwd());

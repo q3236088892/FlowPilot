@@ -255,6 +255,9 @@ export class CLI {
       }
 
       case 'add': {
+        if (rest.includes('--help') || rest.includes('-h')) {
+          return ADD_USAGE;
+        }
         const typeIdx = rest.indexOf('--type');
         const rawType = (typeIdx >= 0 && rest[typeIdx + 1]) || 'general';
         const type = VALID_TASK_TYPES.has(rawType) ? rawType : 'general';
@@ -272,3 +275,4 @@ export class CLI {
 }
 
 const USAGE = '用法: node flow.js [--verbose] <command>\n  init [--force]       初始化工作流\n  next [--batch]       获取下一个待执行任务\n  checkpoint <id>      记录任务完成\n  adopt <id>           接管变更\n  restart <id>         任务重做\n  skip <id>            跳过任务\n  review               标记 review 完成\n  finish               收尾\n  status               查看进度\n  resume               恢复\n  abort                中止\n  rollback <id>        回滚\n  evolve               反思\n  recall <关键词>        记忆查询\n  add <描述>           追加任务\n  version              版本\n\n全局选项:\n  --verbose            调试日志';
+const ADD_USAGE = '用法: node flow.js add <描述> [--type frontend|backend|general]\n示例:\n  node flow.js add "修复支付回调重试"\n  node flow.js add "补上线检查项" --type backend';

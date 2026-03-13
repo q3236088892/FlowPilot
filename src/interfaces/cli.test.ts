@@ -128,6 +128,22 @@ describe('CLI command argument parsing', () => {
     expect(service.add).toHaveBeenCalledWith('修复 接管 提示', 'general');
     stdoutSpy.mockRestore();
   });
+
+  it('shows add help instead of treating --help as a task title', async () => {
+    const service = {
+      add: vi.fn(async () => 'ok'),
+    } as any;
+    const cli = new CLI(service);
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockReturnValue(true);
+
+    await cli.run(['node', 'flow.js', 'add', '--help']);
+
+    expect(service.add).not.toHaveBeenCalled();
+    expect(stdoutSpy).toHaveBeenCalledWith(
+      '用法: node flow.js add <描述> [--type frontend|backend|general]\n示例:\n  node flow.js add "修复支付回调重试"\n  node flow.js add "补上线检查项" --type backend\n'
+    );
+    stdoutSpy.mockRestore();
+  });
 });
 
 describe('CLI update checks', () => {
