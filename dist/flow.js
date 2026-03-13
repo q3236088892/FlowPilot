@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// FLOWPILOT_VERSION: 0.4.1
+// FLOWPILOT_VERSION: 0.4.2
 "use strict";
 
 // src/infrastructure/fs-repository.ts
