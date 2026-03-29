@@ -83,7 +83,30 @@ Copy-Item -Path (Join-Path $sourceRuntime '*') -Destination $targetRuntime -Recu
 
 $entryPath = Join-Path $targetRuntime 'node_modules\@upstash\context7-mcp\dist\index.js'
 if (-not (Test-Path $entryPath)) {
-    throw "Context7 runtime entry was not created: $entryPath"
+    Write-Host "[Codex package][manual] Bundled runtime does not include node_modules. Installing dependencies with npm..."
+    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+        throw "Context7 runtime entry was not created: $entryPath. npm is required to build runtime from bundled package files."
+    }
+
+    Push-Location $targetRuntime
+    try {
+        if (Test-Path (Join-Path $targetRuntime 'package-lock.json')) {
+            & npm ci --omit=dev
+        } else {
+            & npm install --omit=dev
+        }
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm install failed with exit code $LASTEXITCODE under $targetRuntime"
+        }
+    }
+    finally {
+        Pop-Location
+    }
+}
+
+if (-not (Test-Path $entryPath)) {
+    throw "Context7 runtime entry was not created after dependency install: $entryPath"
 }
 
 $launcher = @"

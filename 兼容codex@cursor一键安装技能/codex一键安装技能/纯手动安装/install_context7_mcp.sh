@@ -85,6 +85,24 @@ rm -rf "${TARGET_CONTEXT7_RUNTIME}"
 mkdir -p "${TARGET_CONTEXT7_RUNTIME}"
 cp -R "${SOURCE_CONTEXT7_RUNTIME}"/. "${TARGET_CONTEXT7_RUNTIME}/"
 
+ENTRY_PATH="${TARGET_CONTEXT7_RUNTIME}/node_modules/@upstash/context7-mcp/dist/index.js"
+if [ ! -f "${ENTRY_PATH}" ]; then
+  echo "[Codex package][manual] Bundled runtime does not include node_modules. Installing dependencies with npm..."
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "Error: Context7 runtime entry was not created under ${TARGET_CONTEXT7_RUNTIME} and npm was not found." >&2
+    exit 1
+  fi
+
+  (
+    cd "${TARGET_CONTEXT7_RUNTIME}"
+    if [ -f "package-lock.json" ]; then
+      npm ci --omit=dev
+    else
+      npm install --omit=dev
+    fi
+  )
+fi
+
 cat > "${LAUNCHER_PATH}" <<'EOF'
 #!/usr/bin/env sh
 set -eu
@@ -93,8 +111,8 @@ node "${SCRIPT_DIR}/context7-local/node_modules/@upstash/context7-mcp/dist/index
 EOF
 chmod +x "${LAUNCHER_PATH}"
 
-if [ ! -f "${TARGET_CONTEXT7_RUNTIME}/node_modules/@upstash/context7-mcp/dist/index.js" ]; then
-  echo "Error: Context7 runtime entry was not created under ${TARGET_CONTEXT7_RUNTIME}" >&2
+if [ ! -f "${ENTRY_PATH}" ]; then
+  echo "Error: Context7 runtime entry was not created under ${TARGET_CONTEXT7_RUNTIME} after dependency install." >&2
   exit 1
 fi
 
